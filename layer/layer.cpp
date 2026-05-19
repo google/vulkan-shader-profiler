@@ -28,6 +28,7 @@ static bool gVerbose = true;
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #ifdef VKSP_PERFETTO_AMALGAMATED
 #include <perfetto.h>
@@ -664,6 +665,25 @@ static void sync_timestamps(ThreadInfo *info, uint64_t &start, uint64_t &end)
     }
 }
 
+static uint64_t get_boottime_offset()
+{
+#ifdef __ANDROID__
+    struct timespec ts_mono, ts_boot;
+    clock_gettime(CLOCK_MONOTONIC, &ts_mono);
+    clock_gettime(CLOCK_BOOTTIME, &ts_boot);
+
+    uint64_t mono_now = ts_mono.tv_sec * 1000000000ULL + ts_mono.tv_nsec;
+    uint64_t boot_now = ts_boot.tv_sec * 1000000000ULL + ts_boot.tv_nsec;
+
+    if (mono_now > boot_now) {
+        PRINT("mono_now (%lu) > boot_now (%lu)", mono_now, boot_now);
+    }
+    return boot_now - mono_now;
+#else
+    return 0;
+#endif
+}
+
 #define NB_TIMESTAMP 2
 static VkResult sync_timestamps_in_host_timeline(uint64_t &start, uint64_t &end, ThreadInfo *info)
 {
@@ -683,7 +703,7 @@ static VkResult sync_timestamps_in_host_timeline(uint64_t &start, uint64_t &end,
         PRINT("vkGetCalibratedTimestampsEXT failed (%d)", res);
         return res;
     }
-    info->sync_host = timestamps[0];
+    info->sync_host = timestamps[0] + get_boottime_offset();
     info->sync_dev = timestamp_to_ns(info, timestamps[1]);
 
     sync_timestamps(info, start, end);
