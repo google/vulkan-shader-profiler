@@ -1,8 +1,8 @@
 # Vulkan Shader Profiler
 
-`vulkan-shader-profiler` is a perfetto-based Vulkan shader profiler using the layering capability of the [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader)
+`vulkan-shader-profiler` is a perfetto-based Vulkan shader profiler using the layering capability of the [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader).
 
-It allows to visualize a vulkan application using perfetto with information about the compute shader to easily identify which shader is taking most of the application time, and what is its Vulkan SPIR-V source code.
+It allows you to visualize Vulkan application execution using Perfetto, providing detailed information about compute shaders to help identify performance bottlenecks, and associates Vulkan SPIR-V source code with the trace events.
 
 Using the `vulkan-shader-profiler-extractor` and `vulkan-shader-profiler-runner`, it is also possible to extract a specific dispatch from the trace (using the `dispatchId` debug information from the trace), and replay it with the runner.
 
@@ -12,269 +12,212 @@ Using the `vulkan-shader-profiler-extractor` and `vulkan-shader-profiler-runner`
 
 This is not an officially supported Google product. This project is not eligible for the [Google Open Source Software Vulnerability Rewards Program](https://bughunters.google.com/open-source-security).
 
-# Table of contents
+---
 
-- [Depencencies](#Dependencies)
-- [Building](#Building)
-  - [Build options](#Build-options)
-- [Running an application with Vulkan Shader Profiler](#Running-an-application-with-Vulkan-Shader-Profiler)
-  - [On ChromeOS](#On-ChromeOS)
-  - [Using the trace](#Using-the-trace)
-  - [How does the Vulkan Shader Profiler layer work](#How-does-the-Vulkan-Shader-Profiler-layer-work)
-- [Extracting a dispatch from a trace](#Extracting-a-dispatch-from-a-trace)
-- [Run a Vulkan SPIR-V program with the runner](#Run-a-Vulkan-SPIR-V-program-with-the-runner)
-  - [Using counters inside a Vulkan SPIR-V program](#Using-counters-inside-a-Vulkan-SPIR-V-program)
-- [Known issues](#Known-issues)
-  - [Large shader code](#Large-shader-code)
+## Dependencies
 
-# Dependencies
+*   [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader)
+*   [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers)
+*   [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
+*   [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
+*   [perfetto](https://github.com/google/perfetto)
+*   A working Vulkan implementation/driver.
 
-`vulkan-shader-profiler` depends on the following:
+---
 
-* [Vulkan-Loader](https://github.com/KhronosGroup/Vulkan-Loader)
-* [Vulkan-Headers](https://github.com/KhronosGroup/Vulkan-Headers)
-* [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers)
-* [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools)
-* [perfetto](https://github.com/google/perfetto)
-
-`vulkan-shader-profiler` also (obviously) depends on a Vulkan implementation.
-
-# Building
+## Building
 
 `vulkan-shader-profiler` uses CMake for its build system.
 
+### Host / ChromeOS / Linux
+
 To compile it, please run:
-```
-cmake -B <build_dir> -S <path-to-vulkan-shader-profiler> -DPERFETTO_SDK_PATH=<path-to-perfetto-sdk> -DPERFETTO_TRACE_PROCESSOR_LIB=<path-to-libtrace_processor.a> -DPERFETTO_INTERNAL_INCLUDE_PATH=<path-to-perfetto-include> -DSPIRV_TOOLS_SOURCE_PATH=<path-to-spirv-tools-source-dir> -DSPIRV_TOOLS_BUILD_PATH=<path-to-spirv-tools-build-dir>
+```bash
+cmake -B <build_dir> -S . \
+  -DPERFETTO_SDK_PATH=<path-to-perfetto-sdk> \
+  -DPERFETTO_TRACE_PROCESSOR_LIB=<path-to-libtrace_processor.a> \
+  -DPERFETTO_INTERNAL_INCLUDE_PATH=<path-to-perfetto-include> \
+  -DSPIRV_TOOLS_SOURCE_PATH=<path-to-spirv-tools-source-dir> \
+  -DSPIRV_TOOLS_BUILD_PATH=<path-to-spirv-tools-build-dir>
 cmake --build <build_dir>
 ```
 
-For a real life examples, have a look at:
-- ChromeOS [ebuild](https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/dev-libs/vulkan-shader-profiler/vulkan-shader-profiler-0.0.1.ebuild)
-- Github presubmit [configuration](https://github.com/rjodinchr/vulkan-shader-profiler/blob/main/.github/workflows/presubmit.yml)
+For real-life examples, refer to:
+*   ChromeOS [ebuild](https://chromium.googlesource.com/chromiumos/overlays/chromiumos-overlay/+/main/dev-libs/vulkan-shader-profiler/vulkan-shader-profiler-0.0.1.ebuild)
+*   GitHub presubmit [configuration](.github/workflows/presubmit.yml)
 
-## Build options
+#### Build Options
 
-* REQUIRED:
-  * `PERFETTO_SDK_PATH`: path to [perfetto](https://github.com/google/perfetto) sdk (`vulkan-shader-profiler` is looking for `PERFETTO_SDK_PATH/perfetto.cc` and `PERFETTO_SDK_PATH/perfetto.h`).
-  * `PERFETTO_TRACE_PROCESSOR_LIB`: path to `libtrace_processor.a` produces by a perfetto build.
-  * `PERFETTO_INTERNAL_INCLUDE_PATH`: path to perfetto internal include directory (`<perfetto>/include`), or where it is installed.
-  * `SPIRV_TOOLS_SOURCE_PATH`: path to [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) source directory (PR [#5512](https://github.com/KhronosGroup/SPIRV-Tools/pull/5512) is needed).
-  * `SPIRV_TOOLS_BUILD_PATH`: path to where [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) is built (not installed, just built).
-* OPTIONAL:
-  * `PERFETTO_LIBRARY`: name of a perfetto library already available (avoid having to compile `perfetto.cc`).
-  * `PERFETTO_GEN_INCLUDE_PATH`: path to a a perfetto build (if not installed) `<perfetto>/out/release/gen/build_config`.
-  * `PERFETTO_CXX_CONFIG_INCLUDE_PATH`: path to perfetto buildtools config `<perfetto>/buildtools/libcxx_config`.
-  * `PERFETTO_CXX_SYSTEM_INCLUDE_PATH`: path to perfetto buildtools include `<perfetto>/buildtools/libcxx/include`.
-  * `EXTRACTOR_NOSTDINCXX`: build `vulkan-shader-profiler-extractor` with `-nostdinc++` to be able to link with some `libtrace_processor.a`.
-  * `SPIRV_HEADERS_INCLUDE_PATH`: path to [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) include directory (`<spirv-headers>/include`).
-  * `BACKEND`: [perfetto](https://github.com/google/perfetto) backend to use
-    * `InProcess` (default): the application will generate the traces ([perfetto documentation](https://perfetto.dev/docs/instrumentation/tracing-sdk#in-process-mode)). Build options and environment variables can be used to control the maximum size of traces and the destination file where the traces will be recorded.
-    * `System`: perfetto `traced` daemon will be responsible for generating the traces ([perfetto documentation](https://perfetto.dev/docs/instrumentation/tracing-sdk#system-mode)).
-  * `TRACE_MAX_SIZE` (only with `InProcess` backend): Maximum size (in KB) of traces that can be recorded. Can be overriden at runtime using the following environment variable: `VKSP_TRACE_MAX_SIZE` (Default: `1024`).
-  * `TRACE_DEST` (only with `InProcess` backend): File where the traces will be recorded. Can be overriden at runtime using the following environment variable: `VKSP_TRACE_DEST` (Default: `vulkan-shader-profiler.trace`).
+*   **Required:**
+    *   `PERFETTO_SDK_PATH`: Path to [perfetto](https://github.com/google/perfetto) SDK (looks for `perfetto.cc` and `perfetto.h` in this directory).
+    *   `PERFETTO_TRACE_PROCESSOR_LIB`: Path to `libtrace_processor.a` produced by a Perfetto build.
+    *   `PERFETTO_INTERNAL_INCLUDE_PATH`: Path to Perfetto internal include directory (`<perfetto>/include`).
+    *   `SPIRV_TOOLS_SOURCE_PATH`: Path to [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) source directory.
+    *   `SPIRV_TOOLS_BUILD_PATH`: Path to where [SPIRV-Tools](https://github.com/KhronosGroup/SPIRV-Tools) is built.
+*   **Optional:**
+    *   `PERFETTO_LIBRARY`: Name of a Perfetto library already available (avoids compiling `perfetto.cc`).
+    *   `BACKEND`: Perfetto backend to use:
+        *   `InProcess` (default): The application generates the traces. Build options and environment variables control trace size and destination.
+        *   `System`: Uses the system's `traced` daemon.
+    *   `TRACE_MAX_SIZE` (InProcess only): Max trace size in KB. Can be overridden at runtime via `VKSP_TRACE_MAX_SIZE` (Default: `1024`).
+    *   `TRACE_DEST` (InProcess only): Default trace output file. Can be overridden at runtime via `VKSP_TRACE_DEST` (Default: `vulkan-shader-profiler.trace`).
 
-# Running an application with Vulkan Shader Profiler
+### Android
 
-To run an application with the `vulkan-shader-profiler`, one need to ensure the following points:
+For Android, only the **Layer** and the **Runner** are supported for device execution.
 
-* The `Vulkan-Loader` needs to be able to find the manifest in `<vulkan-shader-profiler>/manifest/vulkan-shader-profiler.json`. This can be achieve by using the follow environment variable: `VK_ADD_LAYER_PATH=<path-to-vulkan-shader-profiler-manifest>`.
-* The Layer needs to be enabled. Either directly from the application, or using the following environment variable: `VK_LOADER_LAYERS_ENABLE="VK_LAYER_SHADER_PROFILER"`.
+1.  Clone the repository into your AOSP tree under `external/vulkan-shader-profiler`.
+2.  Compile using Soong:
+    ```bash
+    m libVkLayer_shader_profiler vulkan-shader-profiler-runner
+    ```
 
-It is also possible to extract the content of the memories of buffers and images used by a specific dispatch. It requires to first do a first run to then extract the targeted dispatch. After that a second run can be done with `VKSP_EXTRACT_BUFFERS_FROM=<trace.spvasm>` set. It will generates a `<trace.spvasm.buffers>` file that can be used later on with the `vulkan-shader-profiler-runner` to initialize the memories of the images and buffers used. Buffers can also be extracted individually by setting `VKSP_EXTRACT_MULTIPLE_BUFFERS=1`, and then be merged together with `vulkan-shader-profiler-merge-buffers` (find a example in [test-buffers.sh](https://github.com/rjodinchr/vulkan-shader-profiler/blob/main/test/test-buffers.sh)).
+---
 
-## On ChromeOS
+## Running an Application with Vulkan Shader Profiler
 
-Make sure to have emerged and deployed the `vulkan-shader-profiler`.
+To run an application with the profiler layer enabled, ensure the following:
 
-Then run the application using `vulkan-shader-profiler.sh`. This script will take care of setting all the environment variables needed to run with the `vulkan-shader-profiler`.
+1.  The `Vulkan-Loader` can find the manifest in `manifest/vulkan-shader-profiler.json`. Set this using:
+    ```bash
+    export VK_ADD_LAYER_PATH=<path-to-vulkan-shader-profiler-manifest-dir>
+    ```
+2.  Enable the layer:
+    ```bash
+    export VK_LOADER_LAYERS_ENABLE="VK_LAYER_SHADER_PROFILER"
+    ```
 
-## On Android
+You can also extract memory contents of buffers and images used by a specific dispatch. This requires a first run to generate the trace, followed by a second run with `VKSP_EXTRACT_BUFFERS_FROM=<trace.spvasm>` set. This generates a `<trace.spvasm.buffers>` file for the runner. Buffers can also be extracted individually by setting `VKSP_EXTRACT_MULTIPLE_BUFFERS=1` and merged using `vulkan-shader-profiler-merge-buffers` (see `test/test-buffers.sh` for an example).
 
-* Clone the project under `<aosp>/external/vulkan-shader-profiler`
-* Compile the project through Soong (Android build system):
-```
-<aosp> $ mmm external/vulkan-shader-profiler
-```
-* Copy the library to the device and enable the layer:
-```
-<aosp> $ adb push $OUT/system/lib64/libVkLayer_shader_profiler.so /data/local/debug/vulkan/
-<aosp> $ adb shell setprop debug.vulkan.layers VK_LAYER_SHADER_PROFILER
-```
+### On ChromeOS
 
-## Using the trace
+Make sure you have emerged and deployed the `vulkan-shader-profiler`. Then run the application using `vulkan-shader-profiler.sh`, which sets up the necessary environment variables.
 
-Once traces have been generated, on can view them using the [perfetto trace viewer](https://ui.perfetto.dev).
+### On Android
 
-## How does the Vulkan Shader Profiler layer work
+1.  Push the library to the device:
+    ```bash
+    adb push $OUT/system/lib64/libVkLayer_shader_profiler.so /data/local/debug/vulkan/
+    ```
+2.  Enable the layer:
+    ```bash
+    adb shell setprop debug.vulkan.layers VK_LAYER_SHADER_PROFILER
+    ```
 
-`vulkan-shader-profiler` intercept the following calls to generate perfetto traces:
+### Using the Trace
 
-* `vkGetDeviceQueue`: Create internal structures to trace everything executed on this queue.
-* `vkAllocateCommandBuffers`: Create internal structures for this command buffer.
-* `vkFreeCommandBuffers`: Clean internal structures for this command buffer.
-* `vkBeginCommandBuffer`: Initialize internal structures for this command buffer.
-* `vkQueueSubmit`: Modify the submit information to add a timeline semaphore used to track this submit internally. Also submit a 'job' to get the command buffer submitted traced.
-* `vkCmdDispatch`: Initialize internal structures to know what to trace if this command buffer get submitted.
-* `vkCmdBindPipeline`: Initialize internal structures to know what pipeline will be executed if this command buffer get submitted.
-* `vkCreateComputePipelines`: Initialize internal structure to know what shader will be executed if this pipeline get submitted.
-* `vkCreateShaderModule`: Create an perfetto event with the readable version of the Vulkan SPIR-V source code.
+Once traces are generated, you can view them using the [Perfetto trace viewer](https://ui.perfetto.dev).
 
-Every intercept call also generates a trace for the function.
+---
 
-`vulkan-shader-profiler` also intercept the following calls which are needed to run the `vulkan-shader-profiler-extractor`:
+## Extracting a Dispatch from a Trace
 
-* `vkUpdateDescriptorSets`
-* `vkCmdBindDescriptorSets`
-* `vkCmdPushConstants`
-* `vkAllocateMemory`
-* `vkCreateBuffer`
-* `vkBindBufferMemory`
-* `vkCreateImage`
-* `vkCreateImageView`
-* `vkBindImageMemory`
-* `vkCreateSampler`
+You can extract a single dispatch from a generated trace using the `dispatchId` found in the trace:
 
-Functions used by `vulkan-shader-profiler` internally:
-
-* `CreateSemaphore`, `DestroySemaphore`, `WaitSemaphores`: To know when a workload end to create the event.
-* `CreateQueryPool`, `DestroyQueryPool`, `GetQueryPoolResults`, `CmdResetQueryPool`: To have somewhere to store the timestamp during the command buffer execution.
-* `CmdWriteTimestamp`: To store the timestamp during the command buffer execution.
-* `GetCalibratedTimestampsEXT`: To convert the device timestamp to the host timeline
-* `GetPhysicalDeviceProperties`: To convert the number of ticks returned by `CmdWriteTimestamp` to actual time information in nano-seconds.
-* The following functions are used for the extracting buffers feature:
-  * `CmdPipelineBarrier`
-  * `CmdCopyBuffer`
-  * `CmdCopyImage`
-  * `MapMemory`
-  * `UnmapMemory`
-  * `GetImageMemoryRequirements`
-  * `GetBufferMemoryRequirements`
-  * `DestroyImage`
-  * `DestroyBuffer`
-  * `FreeMemory`
-  * `GetPhysicalDeviceMemoryProperties`
-
-# Extracting a dispatch from a trace
-
-Once a trace has been generated from an application, it is possible to extract a single dispatch from it using the `dispatchId` debug information from the trace:
-
-```
-$ vulkan-shader-profiler-extractor -i <input_trace> -o <output_file> -d <dispatchId>
-```
-Required options:
-
-* `-i`: the path to the trace generated by the `vulkan-shader-profiler` when running the vulkan application.
-* `-o`: the path where the output of the extractor will be stored (the output is a Vulkan SPIR-V readable file by default).
-* `-d`: the dispatchId to extract from the trace
-
-Optional options:
-
-* `-b`: output a binary Vulkan SPIRV-V program instead of a readable one (allow to have something smaller).
-* `-s`: the path to the file to use instead of the perfetto trace to get the shader code (see section [Large shader code](#Large-shader-code) for more information).
-* `-v`: enable the verbose mode which is mainly use for debug purpose.
-
-# Run a Vulkan SPIR-V program with the runner
-
-Only program extracted from a trace with the `vulkan-shader-profiler-extractor` can be run with the `vulkan-shader-profiler-runner`:
-
-```
-$ vulkan-shader-profiler-runner -i <input>
-```
-Required options:
-
-* `-i`: path to the Vulkan SPIR-V program generated by the extractor
-
-Optional options:
-
-* `-b`: path to a buffers file associated to the input (generated when tracing with `VKSP_EXTRACT_BUFFERS_FROM`).
-* `-c`: disable the counters. Allow to run with no overhead introduced by the counters.
-* `-e`: allow to choose the `spv_target_env` to use when using a non-binary input to convert it to binary (default: `vulkan1.3`)
-* `-n`: allow to run the program multiple times
-* `-m`: allow to run the program multiple times before starting to benchmark it
-* `-o`: descriptor set index and binding of a buffer to dump after the execution (example: `1.2`, meaning descriptor set `1`, binding `2`).
-* `-p`: allow to force the usage of the vulkan queue global priority:
-  * `0`:`low`
-  * `1`:`medium`
-  * `2`:`high`
-  * `3`:`realtime`
-  * `default`: vulkan queue global priority is not used by the runner
-* `-v`: enable the verbose mode which is mainly use for debug purpose.
-
-Output example:
-```
-$ vulkan-shader-profiler-runner -i trace.spvasm -m 1000 -n 100
-vksp_s24-main_function-96.1.1
-----------------------------------
-[  HOST]        Submit:  25.368 ms
-[  HOST]      WaitIdle: 201.198 ms
-[  HOST]         Total: 226.566 ms
-----------------------------------
-[   GPU]         Total: 200.544 ms
-[   GPU]          Cold: 185.171 ms
-[   GPU]           Hot:  15.373 ms
-[   GPU]       Hot avg: 153.730 us
+```bash
+vulkan-shader-profiler-extractor -i <input_trace> -o <output_file> -d <dispatchId> [OPTIONS]
 ```
 
-## Using counters inside a Vulkan SPIR-V program
+*   `-i`: Path to the trace generated by the layer.
+*   `-o`: Output path (readable SPIR-V text by default).
+*   `-d`: The `dispatchId` to extract.
+*   `-b`: Output binary SPIR-V instead of text.
+*   `-s`: Path to a shader file to use instead of the trace (see [Large Shaders](#large-shaders)).
+*   `-v`: Enable verbose debug mode.
 
-It is possible to profile section of the program by adding non-semantic instructions inside the program.
+---
 
-To start a section add:
-```
-%<my_counter> = OpExtInst %<void_type> %<vksp_ext_inst_id> StartCounter "<counter_name>"
-```
+## Replaying a Shader with the Runner
 
-To end a section add:
-```
-%<unused> = OpExtInst %<void_type> %<vksp_ext_inst_id> StopCounter %<my_counter>
+Only programs extracted with `vulkan-shader-profiler-extractor` can be run with the runner:
+
+```bash
+vulkan-shader-profiler-runner -i <input> [OPTIONS]
 ```
 
-Small partial example:
-```
-         %49 = OpExtInstImport "NonSemantic.VkspReflection.1"
+*   `-i`: Path to the extracted SPIR-V program.
+*   `-b`: Path to the associated buffers file (generated via `VKSP_EXTRACT_BUFFERS_FROM`).
+*   `-c`: Disable counters to run without overhead.
+*   `-e`: Target `spv_target_env` for text input conversion (default: `vulkan1.3`).
+*   `-n`: Number of hot runs.
+*   `-m`: Number of cold runs before benchmarking.
+*   `-o`: Descriptor set index and binding of a buffer to dump (e.g., `1.2`).
+*   `-p`: Force Vulkan queue global priority (0: low, 1: medium, 2: high, 3: realtime).
+*   `-v`: Enable verbose debug mode.
+
+### Using Counters in SPIR-V
+
+You can profile specific sections of the program by adding non-semantic instructions:
+
+```assembly
+%vksp = OpExtInstImport "NonSemantic.VkspReflection.4"
 ...
-       %void = OpTypeVoid
+%ct = OpExtInst %void %vksp StartCounter "my_section"
 ...
-         %ct = OpExtInst %void %49 StartCounter "my_section"
-...
-         %un = OpExtInst %void %49 StopCounter %ct
+%un = OpExtInst %void %vksp StopCounter %ct
 ```
 
-Output example:
-```
-$ vulkan-shader-profiler-runner -i trace.spvasm -n 10 -m 100
-vksp_s0-test_simple-128.1.1
--------------------------------
-[  HOST]     Submit:  19.750 us
-[  HOST]   WaitIdle:  55.684 ms
-[  HOST]      Total:  55.703 ms
--------------------------------
-[   GPU]      Total:  54.845 ms
-[   GPU]       Cold:  51.312 ms
-[   GPU]        Hot:   3.532 ms
-[   GPU]    Hot avg: 353.282 us
--------------------------------
-[SHADER] my_section:  29.8%
-```
+The runner will output the percentage of time spent in that section.
 
-# Known issues
+---
 
-## Large shader code
+## How the Vulkan Shader Profiler Layer Works
 
-When tracing applications using large shader code, perfetto can have issue creating the slice.
-It causes the shader code to be missing or to be partially present in the perfetto trace.
-Thus preventing to find the full code in the web ui or to use the `vulkan-shader-profiler-extractor`.
+`vulkan-shader-profiler` intercepts key Vulkan APIs to track execution and resources.
 
-To avoid this issue, it is possible to run the application with the following environment variable set:
+### Intercepted Calls for Tracing
 
-```
-VKSP_SHADER_DIR=<path-use-to-store-the-shaders>
-```
+Every intercepted call also generates a trace event for the function itself.
 
-It will force the `vulkan-shader-profiler` layer to dump the shaders in their binary format in this directory (make sure the directory exists, it will not be created by the `vulkan-shader-profiler` layer).
+*   `vkGetDeviceQueue`: Creates internal structures to trace everything executed on this queue.
+*   `vkAllocateCommandBuffers`: Creates internal structures for the command buffer.
+*   `vkFreeCommandBuffers`: Cleans up internal structures for the command buffer.
+*   `vkBeginCommandBuffer`: Initializes internal structures for command buffer recording.
+*   `vkQueueSubmit`: Modifies submit information to add a timeline semaphore for tracking submission completion, and spawns a background thread to process completed query results.
+*   `vkCmdDispatch`: Records dispatch details to associate with the trace event when executed.
+*   `vkCmdBindPipeline`: Tracks the active pipeline for the command buffer.
+*   `vkCreateComputePipelines`: Associates the pipeline with its compute shader stage.
+*   `vkCreateShaderModule`: Disassembles the SPIR-V shader and writes it into the Perfetto trace.
 
-Then once can either use:
+### Intercepted Calls for Buffer Extraction
 
-- `spirv-dis` to disassemble the interesting shaders to a readable format
-- `vulkan-shader-profiler-extractor` with the `-s` option to specify the shader file to use instead of what is inside the perfetto trace.
+These calls are tracked to capture resource state for the extractor:
+
+*   `vkUpdateDescriptorSets`
+*   `vkCmdBindDescriptorSets`
+*   `vkCmdPushConstants`
+*   `vkAllocateMemory`
+*   `vkCreateBuffer`
+*   `vkBindBufferMemory`
+*   `vkCreateImage`
+*   `vkCreateImageView`
+*   `vkBindImageMemory`
+*   `vkCreateSampler`
+
+### Vulkan APIs Used Internally
+
+The layer calls these APIs internally to perform timing and buffer extraction:
+
+*   **Timing & Synchronization:**
+    *   `vkCreateSemaphore`, `vkDestroySemaphore`, `vkWaitSemaphores`: Used to track workload completion on the GPU.
+    *   `vkCreateQueryPool`, `vkDestroyQueryPool`, `vkGetQueryPoolResults`, `vkCmdResetQueryPool`: Used to allocate and retrieve timestamps.
+    *   `vkCmdWriteTimestamp`: Injected into command buffers to mark start/end times.
+    *   `vkGetCalibratedTimestampsEXT`: Used to align GPU timestamps with the host CPU timeline.
+    *   `vkGetPhysicalDeviceProperties`: Used to retrieve `timestampPeriod` to convert ticks to nanoseconds.
+*   **Buffer/Image Extraction:**
+    *   `vkCmdPipelineBarrier`, `vkCmdCopyBuffer`, `vkCmdCopyImage`: Used to copy resource data to host-visible staging memory.
+    *   `vkMapMemory`, `vkUnmapMemory`: Used to read staging memory on the host.
+    *   `vkGetImageMemoryRequirements`, `vkGetBufferMemoryRequirements`: Used to allocate appropriate staging memory.
+    *   `vkDestroyImage`, `vkDestroyBuffer`, `vkFreeMemory`: Used to clean up staging resources.
+    *   `vkGetPhysicalDeviceMemoryProperties`: Used to find suitable memory types for staging resources.
+
+---
+
+## Known Issues
+
+### Large Shaders
+Large shader code might get truncated or missing in Perfetto traces.
+
+**Workaround:**
+1.  Run with `VKSP_SHADER_DIR=<path>` set to an existing directory. The layer will dump binary `.spv` files there.
+2.  Use the `-s` option with `vulkan-shader-profiler-extractor` to specify the dumped shader file instead of retrieving it from the trace.
