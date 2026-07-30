@@ -573,27 +573,47 @@ bool extract_from_input(const char *filename, spv_target_env &spv_target_env, bo
     std::vector<vksp::vksp_counter> &counters, vksp::vksp_configuration &config)
 {
     FILE *input = fopen(filename, "r");
+    if (input == nullptr) {
+        ERROR("Could not open input file '%s'", filename);
+        return false;
+    }
     fseek(input, 0, SEEK_END);
     size_t input_size = ftell(input);
     fseek(input, 0, SEEK_SET);
     std::vector<char> input_buffer(input_size);
     size_t size_read = 0;
-    do {
-        size_read += fread(&input_buffer.data()[size_read], 1, input_size - size_read, input);
-    } while (size_read != input_size);
+    while (size_read != input_size) {
+        size_t read = fread(&input_buffer.data()[size_read], 1, input_size - size_read, input);
+        if (read == 0) {
+            ERROR("Error reading input file '%s'", filename);
+            fclose(input);
+            return false;
+        }
+        size_read += read;
+    }
     fclose(input);
 
     const uint32_t spirv_magic = 0x07230203;
     spv_context context = spvContextCreate(spv_target_env);
+    if (context == nullptr) {
+        ERROR("Could not create SPIR-V context");
+        return false;
+    }
     uint32_t *binary = (uint32_t *)input_buffer.data();
     size_t size = input_size / sizeof(uint32_t);
-    spv_binary tmp_binary;
-    if (*(uint32_t *)input_buffer.data() != spirv_magic) {
-        spv_diagnostic diagnostic;
+    spv_binary tmp_binary = nullptr;
+    bool success = true;
+
+    if (input_size >= sizeof(uint32_t) && *(uint32_t *)input_buffer.data() != spirv_magic) {
+        spv_diagnostic diagnostic = nullptr;
         auto status = spvTextToBinary(context, input_buffer.data(), input_size, &tmp_binary, &diagnostic);
         if (status != SPV_SUCCESS) {
-            ERROR("Error while converting shader from text to binary: %s", diagnostic->error);
-            spvDiagnosticDestroy(diagnostic);
+            ERROR("Error while converting shader from text to binary: %s",
+                diagnostic ? diagnostic->error : "unknown error");
+            if (diagnostic) {
+                spvDiagnosticDestroy(diagnostic);
+            }
+            spvContextDestroy(context);
             return false;
         }
 
@@ -609,12 +629,12 @@ bool extract_from_input(const char *filename, spv_target_env &spv_target_env, bo
     options.set_run_validator(false);
     if (!opt.Run(binary, size, &shader, options)) {
         ERROR("Error while running 'CreateVkspReflectInfoPass' and 'CreateStripReflectInfoPass'");
-        return false;
+        success = false;
     }
 
-    if (verbose) {
-        spv_text text;
-        spv_diagnostic diag;
+    if (success && verbose) {
+        spv_text text = nullptr;
+        spv_diagnostic diag = nullptr;
         spv_result_t spv_result = spvBinaryToText(context, shader.data(), shader.size(),
             SPV_BINARY_TO_TEXT_OPTION_INDENT | SPV_BINARY_TO_TEXT_OPTION_FRIENDLY_NAMES
                 | SPV_BINARY_TO_TEXT_OPTION_COMMENT,
@@ -623,13 +643,18 @@ bool extract_from_input(const char *filename, spv_target_env &spv_target_env, bo
             PRINT("Shader:\n%s", text->str);
             spvTextDestroy(text);
         } else {
-            ERROR("Could not convert shader from binary to text: %s", diag->error);
-            spvDiagnosticDestroy(diag);
+            ERROR("Could not convert shader from binary to text: %s", diag ? diag->error : "unknown error");
+            if (diag) {
+                spvDiagnosticDestroy(diag);
+            }
         }
     }
 
+    if (tmp_binary) {
+        spvBinaryDestroy(tmp_binary);
+    }
     spvContextDestroy(context);
 
-    return true;
+    return success;
 }
 }

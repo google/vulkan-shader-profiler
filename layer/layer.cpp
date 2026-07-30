@@ -284,6 +284,16 @@ std::vector<DescriptorSetExtracted> DescriptorSetsExtracted;
 
 std::vector<vksp::vksp_descriptor_set> DescriptorSetsToExtract;
 vksp::vksp_configuration vksp_config;
+struct VkspConfigCleanup {
+    ~VkspConfigCleanup()
+    {
+        free((void *)vksp_config.enabledExtensionNames);
+        free((void *)vksp_config.specializationInfoData);
+        free((void *)vksp_config.shaderName);
+        free((void *)vksp_config.entryPoint);
+    }
+};
+static VkspConfigCleanup g_vksp_config_cleanup;
 uint64_t DispatchIdToExtract = UINT64_MAX;
 char *extract_buffers_from_filename = nullptr;
 std::condition_variable DispatchIdCond;
@@ -475,6 +485,13 @@ static void extract_buffers_setup(VkDevice device, VkPhysicalDevice pDevice)
         }
     }
     DispatchIdToExtract = vksp_config.dispatchId;
+
+    for (auto &pc_item : pc) {
+        free((void *)pc_item.pValues);
+    }
+    for (auto &c : counters) {
+        free((void *)c.name);
+    }
 }
 
 static void extract_buffers_copy(VkDevice device, VkCommandBuffer commandBuffer)
@@ -949,10 +966,10 @@ void VKAPI_CALL vksp_CmdDispatch(
     if (dispatchId == DispatchIdToExtract) {
         auto vkspName = ShaderModuleToString[PipelineToShaderModule[pipeline]];
         auto moduleName = PipelineToShaderModuleName[pipeline];
-        if (strcmp(moduleName.c_str(), vksp_config.entryPoint) != 0) {
+        if (moduleName != vksp_config.entryPoint) {
             PRINT("dispatchIdToExtract: entryPoint differs: '%s' != '%s'", moduleName.c_str(), vksp_config.entryPoint);
         }
-        if (strcmp(vkspName.c_str(), vksp_config.shaderName) != 0) {
+        if (vkspName != vksp_config.shaderName) {
             PRINT("dispatchIdToExtract: vkspName differs: '%s' != '%s'", vkspName.c_str(), vksp_config.shaderName);
         }
         if (groupCountX != vksp_config.groupCountX) {
@@ -1117,11 +1134,20 @@ static void writeShaderOnDisk(const char *dir, std::string shader_name, const ui
     filename /= shader_name;
     filename += ".spv";
     FILE *file = fopen(filename.c_str(), "w");
+    if (file == nullptr) {
+        PRINT("Could not open file '%s' for writing", filename.c_str());
+        return;
+    }
     size_t size_written = 0;
     const uint8_t *data = (const uint8_t *)code;
-    do {
-        size_written += fwrite(&data[size_written], 1, code_size - size_written, file);
-    } while (size_written != code_size);
+    while (size_written != code_size) {
+        size_t written = fwrite(&data[size_written], 1, code_size - size_written, file);
+        if (written == 0) {
+            PRINT("Error writing shader to disk '%s'", filename.c_str());
+            break;
+        }
+        size_written += written;
+    }
     fclose(file);
 }
 

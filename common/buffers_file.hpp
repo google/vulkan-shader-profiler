@@ -15,6 +15,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,10 +40,27 @@ public:
         , m_oneFile(oneFile)
     {
     }
+    ~BuffersFile()
+    {
+        for (void *ptr : m_owned_pointers) {
+            free(ptr);
+        }
+    }
 
     bool ReadFromFile(const char *filename)
     {
         FILE *fd = fopen(filename, "r");
+        if (fd == nullptr) {
+            return false;
+        }
+        bool ret = ReadFromFILE(fd);
+        fclose(fd);
+        return ret;
+    }
+
+private:
+    bool ReadFromFILE(FILE *fd)
+    {
         uint32_t file_header[3];
         if (fread(file_header, sizeof(file_header), 1, fd) != 1) {
             return false;
@@ -67,17 +85,19 @@ public:
             }
             size_t byte_read = 0;
             while (byte_read != size) {
-                byte_read += fread(&(((char *)data)[byte_read]), sizeof(char), size - byte_read, fd);
+                size_t read = fread(&(((char *)data)[byte_read]), sizeof(char), size - byte_read, fd);
+                if (read == 0) {
+                    free(data);
+                    return false;
+                }
+                byte_read += read;
             }
+            m_owned_pointers.insert(data);
             buffer_map_val val = std::make_pair(size, data);
             m_buffers[key] = val;
         }
-
-        fclose(fd);
         return true;
     }
-
-private:
     bool WriteToMultipleFiles(const char *filename)
     {
         for (auto &buffer : m_buffers) {
@@ -95,7 +115,12 @@ private:
 
             uint32_t byte_written = 0;
             while (byte_written != size) {
-                byte_written += fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                size_t written = fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                if (written == 0) {
+                    fclose(fd);
+                    return false;
+                }
+                byte_written += written;
             }
 
             fclose(fd);
@@ -103,12 +128,8 @@ private:
         return true;
     }
 
-    bool WriteToOneFile(const char *filename)
+    bool WriteToOneFILE(FILE *fd)
     {
-        FILE *fd = fopen(filename, "w");
-        if (fd == nullptr) {
-            return false;
-        }
         if (fwrite(&m_magic, sizeof(m_magic), 1, fd) != 1) {
             return false;
         }
@@ -134,16 +155,29 @@ private:
             }
             uint32_t byte_written = 0;
             while (byte_written != size) {
-                byte_written += fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                size_t written = fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                if (written == 0) {
+                    return false;
+                }
+                byte_written += written;
             }
         }
         uint32_t eof[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
         if (fwrite(eof, sizeof(eof), 1, fd) != 1) {
             return false;
         }
-        fclose(fd);
-
         return true;
+    }
+
+    bool WriteToOneFile(const char *filename)
+    {
+        FILE *fd = fopen(filename, "w");
+        if (fd == nullptr) {
+            return false;
+        }
+        bool ret = WriteToOneFILE(fd);
+        fclose(fd);
+        return ret;
     }
 
 public:
@@ -171,5 +205,6 @@ private:
     const uint32_t m_dispatchId;
     buffers_map m_buffers;
     bool m_oneFile;
+    std::set<void *> m_owned_pointers;
 };
 }

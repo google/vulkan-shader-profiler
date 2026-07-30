@@ -21,8 +21,6 @@
 #include "source/opt/pass.h"
 #include "spirv/unified1/NonSemanticVkspReflection.h"
 
-#include <filesystem>
-
 namespace vksp {
 
 class InsertVkspReflectInfoPass : public spvtools::opt::Pass {
@@ -224,10 +222,10 @@ private:
 };
 }
 
-bool text_to_binary(spv_context context, std::string *shader, spv_binary &binary)
+bool text_to_binary(spv_context context, const char *shader, spv_binary &binary)
 {
     spv_diagnostic diagnostic;
-    auto status = spvTextToBinary(context, shader->data(), shader->size(), &binary, &diagnostic);
+    auto status = spvTextToBinary(context, shader, strlen(shader), &binary, &diagnostic);
     if (status != SPV_SUCCESS) {
         ERROR("Error while converting shader from text to binary: %s", diagnostic->error);
         spvDiagnosticDestroy(diagnostic);
@@ -280,38 +278,56 @@ bool store_shader_binary_in_output(spv_context context, spv_binary input_binary,
     }
 
     FILE *output = fopen(output_filename, "w");
+    if (output == nullptr) {
+        ERROR("Could not open output file '%s'", output_filename);
+        return false;
+    }
+    bool success = true;
     if (binary_output) {
-        fwrite(binary.data(), sizeof(uint32_t), binary.size(), output);
+        size_t written = fwrite(binary.data(), sizeof(uint32_t), binary.size(), output);
+        if (written != binary.size()) {
+            ERROR("Error writing binary shader to output");
+            success = false;
+        }
     } else {
-        spv_text text;
+        spv_text text = nullptr;
         if (!binary_to_text(context, binary, text)) {
             ERROR("Could not convert shader from binary to text");
+            fclose(output);
             return false;
         }
-        fprintf(output, "%s", text->str);
+        int printed = fprintf(output, "%s", text->str);
+        if (printed < 0) {
+            ERROR("Error writing text shader to output");
+            success = false;
+        }
         spvTextDestroy(text);
     }
 
     fclose(output);
-
-    spvContextDestroy(context);
-    return true;
+    return success;
 }
 
-extern "C" bool store_shader_in_output(std::string *shader, std::vector<vksp::vksp_push_constant> *pc,
+extern "C" bool store_shader_in_output(const char *shader, std::vector<vksp::vksp_push_constant> *pc,
     std::vector<vksp::vksp_descriptor_set> *ds, std::vector<vksp::vksp_specialization_map_entry> *me,
     vksp::vksp_configuration *config, const char *output_filename, bool binary_output)
 {
     spv_context context = spvContextCreate(SPV_ENV_VULKAN_1_3);
-    spv_binary binary;
+    if (context == nullptr) {
+        ERROR("Could not create SPIR-V context");
+        return false;
+    }
+    spv_binary binary = nullptr;
     if (!text_to_binary(context, shader, binary)) {
         ERROR("Could not convert shader to binary");
+        spvContextDestroy(context);
         return false;
     }
 
     auto ret = store_shader_binary_in_output(context, binary, pc, ds, me, config, output_filename, binary_output);
 
     spvBinaryDestroy(binary);
+    spvContextDestroy(context);
     return ret;
 }
 
@@ -321,26 +337,37 @@ extern "C" bool store_shader_buffer_in_output(std::vector<char> *shader_buffer,
     bool binary_output)
 {
     spv_context context = spvContextCreate(SPV_ENV_VULKAN_1_3);
+    if (context == nullptr) {
+        ERROR("Could not create SPIR-V context");
+        return false;
+    }
     spv_binary_t binary
         = { .code = (uint32_t *)shader_buffer->data(), .wordCount = shader_buffer->size() / sizeof(uint32_t) };
 
-    return store_shader_binary_in_output(context, &binary, pc, ds, me, config, output_filename, binary_output);
+    auto ret = store_shader_binary_in_output(context, &binary, pc, ds, me, config, output_filename, binary_output);
+    spvContextDestroy(context);
+    return ret;
 }
 
-extern "C" bool read_shader_buffer(std::string *gShaderFile, std::vector<char> *shader_buffer)
+extern "C" bool read_shader_buffer(const char *gShaderFile, std::vector<char> *shader_buffer)
 {
-    if (!std::filesystem::exists(*gShaderFile)) {
+    FILE *file = fopen(gShaderFile, "r");
+    if (file == nullptr) {
         return false;
     }
-    FILE *file = fopen(gShaderFile->c_str(), "r");
     fseek(file, 0, SEEK_END);
     size_t file_size = ftell(file);
     fseek(file, 0, SEEK_SET);
     shader_buffer->resize(file_size);
     size_t size_read = 0;
-    do {
-        size_read += fread(&(shader_buffer->data()[size_read]), 1, file_size - size_read, file);
-    } while (size_read != file_size);
+    while (size_read != file_size) {
+        size_t read = fread(&(shader_buffer->data()[size_read]), 1, file_size - size_read, file);
+        if (read == 0) {
+            fclose(file);
+            return false;
+        }
+        size_read += read;
+    }
     fclose(file);
     return true;
 }

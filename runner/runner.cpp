@@ -78,17 +78,16 @@ static std::vector<VkSampler> gSamplers;
 static VkDescriptorPool gDescPool;
 static VkShaderModule gShaderModule;
 
-static std::vector<const char *> split_string(std::string input, const char *delimiter)
+static std::vector<std::string> split_string(std::string input, const char *delimiter)
 {
-    std::vector<const char *> vector;
+    std::vector<std::string> vector;
     size_t pos = 0;
     size_t delimiter_size = strlen(delimiter);
     while ((pos = input.find(delimiter)) != std::string::npos) {
-        auto extension = input.substr(0, pos);
-        vector.push_back(strdup(extension.c_str()));
+        vector.push_back(input.substr(0, pos));
         input.erase(0, pos + delimiter_size);
     }
-    vector.push_back(strdup(input.c_str()));
+    vector.push_back(input);
     return vector;
 }
 
@@ -96,6 +95,7 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
     VkCommandBuffer &cmdBuffer, VkPhysicalDeviceMemoryProperties &memProperties, const char *enabledExtensionNames)
 {
     VkResult res;
+    device = VK_NULL_HANDLE;
 
     VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "vulkan-shader-profiler-runnner", 0,
         "vulkan-shader-profiler-runner", 0, VK_MAKE_VERSION(1, 3, 0) };
@@ -111,15 +111,23 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
     };
 
     res = vkCreateInstance(&info, nullptr, &gInstance);
-    CHECK_VK(res, "Could not create vulkan instance");
-
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create vulkan instance (result: %i)", res);
+        return -1;
+    }
     uint32_t nbDevices;
     res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, nullptr);
-    CHECK_VK(res, "Could not enumerate physical devices");
+    if (res != VK_SUCCESS) {
+        ERROR("Could not enumerate physical devices (result: %i)", res);
+        return -1;
+    }
 
     std::vector<VkPhysicalDevice> physicalDevices(nbDevices);
     res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, physicalDevices.data());
-    CHECK_VK(res, "Could not enumerate physical devices (second call)");
+    if (res != VK_SUCCESS) {
+        ERROR("Could not enumerate physical devices (second call) (result: %i)", res);
+        return -1;
+    }
     pDevice = physicalDevices.front();
 
     vkGetPhysicalDeviceMemoryProperties(pDevice, &memProperties);
@@ -145,9 +153,14 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
     }
     VkPhysicalDeviceFeatures2 pDeviceFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, pNext };
     vkGetPhysicalDeviceFeatures2(pDevice, &pDeviceFeatures);
-    CHECK(shaderAtomicInt64Features.shaderBufferInt64Atomics != 0, "shaderBufferInt64Atomics not supported");
-    CHECK(gDisableCounters || (shaderClockFeatures.shaderSubgroupClock != 0),
-        "shaderClockFeatures.shaderSubgroupClock not supported");
+    if (shaderAtomicInt64Features.shaderBufferInt64Atomics == 0) {
+        ERROR("shaderBufferInt64Atomics not supported");
+        return -1;
+    }
+    if (!gDisableCounters && (shaderClockFeatures.shaderSubgroupClock == 0)) {
+        ERROR("shaderClockFeatures.shaderSubgroupClock not supported");
+        return -1;
+    }
 
     uint32_t nbFamilies;
     vkGetPhysicalDeviceQueueFamilyProperties(pDevice, &nbFamilies, nullptr);
@@ -166,7 +179,10 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
             }
         }
     }
-    CHECK(queueFamilyIndex != UINT32_MAX, "Could not find a VK_QUEUE_COMPUTE_BIT queue");
+    if (queueFamilyIndex == UINT32_MAX) {
+        ERROR("Could not find a VK_QUEUE_COMPUTE_BIT queue");
+        return -1;
+    }
 
     void *globalPriority = nullptr;
 
@@ -189,8 +205,16 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
 
     size_t pos = 0;
     std::string extensionsStr = std::string(enabledExtensionNames);
-    extensionsStr.erase(0, 1); // remove first '.'
-    std::vector<const char *> extensions = split_string(extensionsStr, ".");
+    if (!extensionsStr.empty() && extensionsStr[0] == '.') {
+        extensionsStr.erase(0, 1); // remove first '.'
+    }
+    std::vector<std::string> extensionsStrVector = split_string(extensionsStr, ".");
+    std::vector<const char *> extensions;
+    for (auto &ext : extensionsStrVector) {
+        if (!ext.empty()) {
+            extensions.push_back(ext.c_str());
+        }
+    }
     if (!gDisableCounters) {
         extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
     }
@@ -209,25 +233,36 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
     };
 
     res = vkCreateDevice(pDevice, &createInfo, nullptr, &device);
-    CHECK_VK(res, "Could not create device");
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create device (result: %i)", res);
+        return -1;
+    }
 
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
     const VkCommandPoolCreateInfo pCreateInfo
         = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, 0, queueFamilyIndex };
     res = vkCreateCommandPool(device, &pCreateInfo, nullptr, &gCmdPool);
-    CHECK_VK(res, "Could not create command pool");
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create command pool (result: %i)", res);
+        return -1;
+    }
 
     const VkCommandBufferAllocateInfo pAllocateInfo
         = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, gCmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
     res = vkAllocateCommandBuffers(device, &pAllocateInfo, &cmdBuffer);
-    CHECK_VK(res, "Could not allocate command buffer");
+    if (res != VK_SUCCESS) {
+        ERROR("Could not allocate command buffer (result: %i)", res);
+        return -1;
+    }
 
     const VkCommandBufferBeginInfo pBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
         VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr };
     res = vkBeginCommandBuffer(cmdBuffer, &pBeginInfo);
-    CHECK_VK(res, "Could not begin command buffer");
-
+    if (res != VK_SUCCESS) {
+        ERROR("Could not begin command buffer (result: %i)", res);
+        return -1;
+    }
     return 0;
 }
 
@@ -1106,36 +1141,51 @@ static uint32_t print_results(VkPhysicalDevice pDevice, VkDevice device, vksp::v
 void clean_vk_objects(VkDevice device, VkCommandBuffer cmdBuffer, std::vector<VkDescriptorSet> &descSet,
     std::vector<VkDescriptorSetLayout> &descSetLayoutVector, VkPipelineLayout pipelineLayout, VkPipeline pipeline)
 {
-    vkDestroyShaderModule(device, gShaderModule, nullptr);
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    for (auto sampler : gSamplers) {
-        vkDestroySampler(device, sampler, nullptr);
+    if (device != VK_NULL_HANDLE) {
+        if (gShaderModule != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, gShaderModule, nullptr);
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        for (auto sampler : gSamplers) {
+            vkDestroySampler(device, sampler, nullptr);
+        }
+        for (auto imageView : gImageViews) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
+        for (auto image : gImages) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        for (auto bufferView : gBufferViews) {
+            vkDestroyBufferView(device, bufferView, nullptr);
+        }
+        for (auto buffer : gBuffers) {
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+        for (auto memory : gMemories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        if (gDescPool != VK_NULL_HANDLE && !descSet.empty()) {
+            vkFreeDescriptorSets(device, gDescPool, descSet.size(), descSet.data());
+        }
+        if (gDescPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, gDescPool, nullptr);
+        }
+        for (auto descSetLayout : descSetLayoutVector) {
+            vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
+        }
+        if (gCmdPool != VK_NULL_HANDLE && cmdBuffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device, gCmdPool, 1, &cmdBuffer);
+        }
+        if (gCmdPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, gCmdPool, nullptr);
+        }
+        vkDestroyDevice(device, nullptr);
     }
-    for (auto imageView : gImageViews) {
-        vkDestroyImageView(device, imageView, nullptr);
+    if (gInstance != VK_NULL_HANDLE) {
+        vkDestroyInstance(gInstance, nullptr);
     }
-    for (auto image : gImages) {
-        vkDestroyImage(device, image, nullptr);
-    }
-    for (auto bufferView : gBufferViews) {
-        vkDestroyBufferView(device, bufferView, nullptr);
-    }
-    for (auto buffer : gBuffers) {
-        vkDestroyBuffer(device, buffer, nullptr);
-    }
-    for (auto memory : gMemories) {
-        vkFreeMemory(device, memory, nullptr);
-    }
-    vkFreeDescriptorSets(device, gDescPool, descSet.size(), descSet.data());
-    vkDestroyDescriptorPool(device, gDescPool, nullptr);
-    for (auto descSetLayout : descSetLayoutVector) {
-        vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
-    }
-    vkFreeCommandBuffers(device, gCmdPool, 1, &cmdBuffer);
-    vkDestroyCommandPool(device, gCmdPool, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(gInstance, nullptr);
 }
 
 static void help()
@@ -1185,8 +1235,8 @@ static bool parse_args(int argc, char **argv)
             gOutputString = std::string(optarg);
             auto splits = split_string(gOutputString, ".");
             if (splits.size() == 2) {
-                gOutputDs = atoi(splits[0]);
-                gOutputBinding = atoi(splits[1]);
+                gOutputDs = atoi(splits[0].c_str());
+                gOutputBinding = atoi(splits[1].c_str());
             } else {
                 ERROR("'%s' does not match output (expected: 'ds.binding')", gOutputString.c_str());
                 bHelp = true;
@@ -1218,46 +1268,20 @@ static bool parse_args(int argc, char **argv)
     return true;
 }
 
-int main(int argc, char **argv)
+int run(VkPhysicalDevice &pDevice, VkDevice &device, VkQueue &queue, VkCommandBuffer &cmdBuffer,
+    std::vector<VkDescriptorSet> &descSet, std::vector<VkDescriptorSetLayout> &descSetLayoutVector,
+    VkPipelineLayout &pipelineLayout, VkPipeline &pipeline, std::vector<uint32_t> &shader,
+    std::vector<vksp::vksp_descriptor_set> &dsVector, std::vector<vksp::vksp_push_constant> &pcVector,
+    std::vector<vksp::vksp_specialization_map_entry> &meVector, std::vector<vksp::vksp_counter> &counters,
+    vksp::vksp_configuration &config, VkPhysicalDeviceMemoryProperties &memProperties)
 {
-    if (!parse_args(argc, argv)) {
+    std::vector<VkPushConstantRange> pcRanges;
+    std::map<uint32_t, std::vector<vksp::vksp_push_constant>> pcMap;
+
+    if (allocate_descriptor_set(device, descSet, dsVector, descSetLayoutVector) != 0) {
+        ERROR("Could not allocate descriptor set");
         return -1;
     }
-    PRINT("Arguments parsed: input '%s' verbose '%u' spv_target_env '%s' hot_runs '%u' cold_runs '%u' buffers '%s' "
-          "output_ds '%u' output_binding '%u' counters '%u' priority '%u'",
-        gInput.c_str(), gVerbose, spvTargetEnvDescription(gSpvTargetEnv), gHotRun, gColdRun, gBuffersInput.c_str(),
-        gOutputDs, gOutputBinding, gDisableCounters, gPriority);
-
-    std::vector<uint32_t> shader;
-    std::vector<vksp::vksp_descriptor_set> dsVector;
-    std::vector<vksp::vksp_push_constant> pcVector;
-    std::vector<vksp::vksp_specialization_map_entry> meVector;
-    std::vector<vksp::vksp_counter> counters;
-    vksp::vksp_configuration config;
-    CHECK(extract_from_input(gInput.c_str(), gSpvTargetEnv, gDisableCounters, gVerbose, shader, dsVector, pcVector,
-              meVector, counters, config),
-        "Could not extract data from input");
-    PRINT("Shader name: '%s'", config.shaderName);
-    PRINT("Entry point: '%s'", config.entryPoint);
-    PRINT("groupCount: %u-%u-%u", config.groupCountX, config.groupCountY, config.groupCountZ);
-    PRINT("specializationInfo data (size %u): '%s'", config.specializationInfoDataSize, config.specializationInfoData);
-    PRINT("Extensions: '%s'", config.enabledExtensionNames);
-
-    VkPhysicalDevice pDevice;
-    VkDevice device;
-    VkQueue queue;
-    VkCommandBuffer cmdBuffer;
-    VkPhysicalDeviceMemoryProperties memProperties;
-    CHECK(
-        get_device_queue_and_cmd_buffer(pDevice, device, queue, cmdBuffer, memProperties, config.enabledExtensionNames)
-            == 0,
-        "Could not get Vulkan Queue");
-    PRINT("Device, queue and command buffer created");
-
-    std::vector<VkDescriptorSet> descSet(count_descriptor_set(dsVector));
-    std::vector<VkDescriptorSetLayout> descSetLayoutVector;
-    CHECK(allocate_descriptor_set(device, descSet, dsVector, descSetLayoutVector) == 0,
-        "Could not allocate descriptor set");
     PRINT("Descriptor set allocated");
 
     if (gBuffersInput != "") {
@@ -1280,8 +1304,10 @@ int main(int argc, char **argv)
                 ds.ds, ds.binding, ds.type, ds.buffer.size, ds.buffer.flags, ds.buffer.queueFamilyIndexCount,
                 ds.buffer.sharingMode, ds.buffer.usage, ds.buffer.range, ds.buffer.offset, ds.buffer.memorySize,
                 ds.buffer.memoryType, ds.buffer.bindOffset, ds.buffer.viewFlags, ds.buffer.viewFormat);
-            CHECK(handle_descriptor_set_buffer(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_buffer(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set buffer");
+                return -1;
+            }
             break;
         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
@@ -1297,8 +1323,10 @@ int main(int argc, char **argv)
                 ds.image.layerCount, ds.image.viewFlags, ds.image.viewType, ds.image.viewFormat, ds.image.component_a,
                 ds.image.component_b, ds.image.component_g, ds.image.component_r, ds.image.memoryType,
                 ds.image.memorySize, ds.image.bindOffset);
-            CHECK(handle_descriptor_set_image(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_image(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set image");
+                return -1;
+            }
             break;
         case VK_DESCRIPTOR_TYPE_SAMPLER:
             PRINT("descriptor_set: ds %u binding %u type %u SAMPLER flags %u magFilter %u minFilter %u mipmapMode %u "
@@ -1309,16 +1337,16 @@ int main(int argc, char **argv)
                 ds.sampler.fMipLodBias, ds.sampler.anisotropyEnable, ds.sampler.fMaxAnisotropy,
                 ds.sampler.compareEnable, ds.sampler.compareOp, ds.sampler.fMinLod, ds.sampler.fMaxLod,
                 ds.sampler.borderColor, ds.sampler.unnormalizedCoordinates);
-            CHECK(handle_descriptor_set_sampler(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_sampler(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set sampler");
+                return -1;
+            }
             break;
         default:
             PRINT("descriptor_set, ds %u binding %u type %u UNKNWON_TYPE", ds.ds, ds.binding, ds.type);
             break;
         }
     }
-    std::vector<VkPushConstantRange> pcRanges;
-    std::map<uint32_t, std::vector<vksp::vksp_push_constant>> pcMap;
     for (auto &pc : pcVector) {
         PRINT("push_constants: offset %u size %u stageFlags %u pValues %s", pc.offset, pc.size, pc.stageFlags,
             pc.pValues);
@@ -1335,14 +1363,17 @@ int main(int argc, char **argv)
         pcRanges.push_back({ it.first, min_offset, size });
     }
 
-    VkPipelineLayout pipelineLayout;
-    CHECK(allocate_pipeline_layout(device, pcVector, pcRanges, descSetLayoutVector, pipelineLayout) == 0,
-        "Could not allocate pipeline layout");
+    if (allocate_pipeline_layout(device, pcVector, pcRanges, descSetLayoutVector, pipelineLayout) != 0) {
+        ERROR("Could not allocate pipeline layout");
+        return -1;
+    }
     PRINT("Pipeline layout allocated");
 
     for (auto &range : pcRanges) {
-        CHECK(handle_push_constant(pcMap[(uint32_t)range.stageFlags], range, cmdBuffer, pipelineLayout) == 0,
-            "Could not handle push constant");
+        if (handle_push_constant(pcMap[(uint32_t)range.stageFlags], range, cmdBuffer, pipelineLayout) != 0) {
+            ERROR("Could not handle push constant");
+            return -1;
+        }
     }
 
     vkCmdBindDescriptorSets(
@@ -1352,27 +1383,93 @@ int main(int argc, char **argv)
         PRINT("map_entry: constantID %u offset %u size %u", me.constantID, me.offset, me.size);
     }
 
-    VkPipeline pipeline;
-    CHECK(allocate_pipeline(shader, pipelineLayout, device, cmdBuffer, meVector, config, pipeline) == 0,
-        "Could not allocate pipeline");
+    if (allocate_pipeline(shader, pipelineLayout, device, cmdBuffer, meVector, config, pipeline) != 0) {
+        ERROR("Could not allocate pipeline");
+        return -1;
+    }
     PRINT("Compute pipeline allocated");
 
     if (gHotRun) {
         uint64_t gpu_timestamps[gNbGpuTimestamps];
         std::chrono::steady_clock::time_point host_timestamps[3];
-        CHECK(execute(device, cmdBuffer, queue, config, counters, gpu_timestamps, host_timestamps, memProperties) == 0,
-            "Could not execute");
+        if (execute(device, cmdBuffer, queue, config, counters, gpu_timestamps, host_timestamps, memProperties) != 0) {
+            ERROR("Could not execute");
+            return -1;
+        }
         PRINT("Execution completed");
 
-        CHECK(print_results(pDevice, device, config, counters, gpu_timestamps, host_timestamps) == 0,
-            "Could not print all results");
+        if (print_results(pDevice, device, config, counters, gpu_timestamps, host_timestamps) != 0) {
+            ERROR("Could not print all results");
+            return -1;
+        }
 
         if (gOutputDsPtr != nullptr) {
-            CHECK(dump_output(device) == 0, "Could not dump output memory");
+            if (dump_output(device) != 0) {
+                ERROR("Could not dump output memory");
+                return -1;
+            }
         }
     }
+    return 0;
+}
+
+int main(int argc, char **argv)
+{
+    if (!parse_args(argc, argv)) {
+        return -1;
+    }
+    PRINT("Arguments parsed: input '%s' verbose '%u' spv_target_env '%s' hot_runs '%u' cold_runs '%u' buffers '%s' "
+          "output_ds '%u' output_binding '%u' counters '%u' priority '%u'",
+        gInput.c_str(), gVerbose, spvTargetEnvDescription(gSpvTargetEnv), gHotRun, gColdRun, gBuffersInput.c_str(),
+        gOutputDs, gOutputBinding, gDisableCounters, gPriority);
+
+    std::vector<uint32_t> shader;
+    std::vector<vksp::vksp_descriptor_set> dsVector;
+    std::vector<vksp::vksp_push_constant> pcVector;
+    std::vector<vksp::vksp_specialization_map_entry> meVector;
+    std::vector<vksp::vksp_counter> counters;
+    vksp::vksp_configuration config = {};
+    CHECK(extract_from_input(gInput.c_str(), gSpvTargetEnv, gDisableCounters, gVerbose, shader, dsVector, pcVector,
+              meVector, counters, config),
+        "Could not extract data from input");
+    PRINT("Shader name: '%s'", config.shaderName);
+    PRINT("Entry point: '%s'", config.entryPoint);
+    PRINT("groupCount: %u-%u-%u", config.groupCountX, config.groupCountY, config.groupCountZ);
+    PRINT("specializationInfo data (size %u): '%s'", config.specializationInfoDataSize, config.specializationInfoData);
+    PRINT("Extensions: '%s'", config.enabledExtensionNames);
+
+    VkPhysicalDevice pDevice;
+    VkDevice device = VK_NULL_HANDLE;
+    VkQueue queue;
+    VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
+    VkPhysicalDeviceMemoryProperties memProperties;
+    if (get_device_queue_and_cmd_buffer(pDevice, device, queue, cmdBuffer, memProperties, config.enabledExtensionNames)
+        != 0) {
+        ERROR("Could not get Vulkan Queue");
+        return -1;
+    }
+    PRINT("Device, queue and command buffer created");
+
+    std::vector<VkDescriptorSet> descSet(count_descriptor_set(dsVector));
+    std::vector<VkDescriptorSetLayout> descSetLayoutVector;
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+
+    int ret = run(pDevice, device, queue, cmdBuffer, descSet, descSetLayoutVector, pipelineLayout, pipeline, shader,
+        dsVector, pcVector, meVector, counters, config, memProperties);
 
     clean_vk_objects(device, cmdBuffer, descSet, descSetLayoutVector, pipelineLayout, pipeline);
 
-    return 0;
+    free((void *)config.enabledExtensionNames);
+    free((void *)config.specializationInfoData);
+    free((void *)config.shaderName);
+    free((void *)config.entryPoint);
+    for (auto &pc : pcVector) {
+        free((void *)pc.pValues);
+    }
+    for (auto &c : counters) {
+        free((void *)c.name);
+    }
+
+    return ret;
 }
