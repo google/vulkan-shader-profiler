@@ -302,7 +302,7 @@ private:
             ds_->push_back(ds);
             descriptor_set_0_max_binding = UpdateMaxBinding(ds.ds, ds.binding, descriptor_set_0_max_binding);
         } break;
-        case NonSemanticVkspReflectionPushConstants: {
+        case NonSemanticVkspReflectionPushConstants:
             vksp_push_constant pc;
             pc.offset = GetUInt(inst->GetOperand(op_id++).AsId());
             pc.size = GetUInt(inst->GetOperand(op_id++).AsId());
@@ -310,7 +310,6 @@ private:
             pc.stageFlags = GetUInt(inst->GetOperand(op_id++).AsId());
             pc_->push_back(pc);
             break;
-        }
         case NonSemanticVkspReflectionSpecializationMapEntry:
             vksp_specialization_map_entry me;
             me.constantID = GetUInt(inst->GetOperand(op_id++).AsId());
