@@ -78,17 +78,16 @@ static std::vector<VkSampler> gSamplers;
 static VkDescriptorPool gDescPool;
 static VkShaderModule gShaderModule;
 
-static std::vector<const char *> split_string(std::string input, const char *delimiter)
+static std::vector<std::string> split_string(std::string input, const char *delimiter)
 {
-    std::vector<const char *> vector;
+    std::vector<std::string> vector;
     size_t pos = 0;
     size_t delimiter_size = strlen(delimiter);
     while ((pos = input.find(delimiter)) != std::string::npos) {
-        auto extension = input.substr(0, pos);
-        vector.push_back(strdup(extension.c_str()));
+        vector.push_back(input.substr(0, pos));
         input.erase(0, pos + delimiter_size);
     }
-    vector.push_back(strdup(input.c_str()));
+    vector.push_back(input);
     return vector;
 }
 
@@ -96,139 +95,201 @@ static int get_device_queue_and_cmd_buffer(VkPhysicalDevice &pDevice, VkDevice &
     VkCommandBuffer &cmdBuffer, VkPhysicalDeviceMemoryProperties &memProperties, const char *enabledExtensionNames)
 {
     VkResult res;
-
-    VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "vulkan-shader-profiler-runnner", 0,
-        "vulkan-shader-profiler-runner", 0, VK_MAKE_VERSION(1, 3, 0) };
-    VkInstanceCreateInfo info = {
-        VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
-        nullptr,
-        0,
-        &appInfo,
-        0,
-        nullptr,
-        0,
-        nullptr,
-    };
-
-    res = vkCreateInstance(&info, nullptr, &gInstance);
-    CHECK_VK(res, "Could not create vulkan instance");
-
-    uint32_t nbDevices;
-    res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, nullptr);
-    CHECK_VK(res, "Could not enumerate physical devices");
-
-    std::vector<VkPhysicalDevice> physicalDevices(nbDevices);
-    res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, physicalDevices.data());
-    CHECK_VK(res, "Could not enumerate physical devices (second call)");
-    pDevice = physicalDevices.front();
-
-    vkGetPhysicalDeviceMemoryProperties(pDevice, &memProperties);
-    VkPhysicalDeviceVariablePointerFeaturesKHR variablePointerFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES_KHR, nullptr };
-    VkPhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR shaderSubgroupExtendedTypesFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES_KHR, &variablePointerFeatures };
-    VkPhysicalDeviceShaderFloat16Int8FeaturesKHR float16Int8Features
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR, &shaderSubgroupExtendedTypesFeatures };
-    VkPhysicalDevice8BitStorageFeaturesKHR storage8bitFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES_KHR, &float16Int8Features };
-    VkPhysicalDevice16BitStorageFeaturesKHR storage16bitFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES_KHR, &storage8bitFeatures };
-    VkPhysicalDeviceZeroInitializeWorkgroupMemoryFeatures zeroInitializeWgMemFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_WORKGROUP_MEMORY_FEATURES, &storage16bitFeatures };
-    VkPhysicalDeviceShaderAtomicInt64Features shaderAtomicInt64Features
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES, &zeroInitializeWgMemFeatures };
-    VkPhysicalDeviceShaderClockFeaturesKHR shaderClockFeatures
-        = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR, &shaderAtomicInt64Features };
-    void *pNext = &shaderAtomicInt64Features;
-    if (!gDisableCounters) {
-        pNext = &shaderClockFeatures;
-    }
-    VkPhysicalDeviceFeatures2 pDeviceFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, pNext };
-    vkGetPhysicalDeviceFeatures2(pDevice, &pDeviceFeatures);
-    CHECK(shaderAtomicInt64Features.shaderBufferInt64Atomics != 0, "shaderBufferInt64Atomics not supported");
-    CHECK(gDisableCounters || (shaderClockFeatures.shaderSubgroupClock != 0),
-        "shaderClockFeatures.shaderSubgroupClock not supported");
-
-    uint32_t nbFamilies;
-    vkGetPhysicalDeviceQueueFamilyProperties(pDevice, &nbFamilies, nullptr);
-
-    std::vector<VkQueueFamilyProperties> families(nbFamilies);
-    vkGetPhysicalDeviceQueueFamilyProperties(pDevice, &nbFamilies, families.data());
-
+    device = VK_NULL_HANDLE;
     uint32_t queueFamilyIndex = UINT32_MAX;
-    uint32_t nbQueues;
-    for (uint32_t i = 0; i < nbFamilies; i++) {
-        if (families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
-            queueFamilyIndex = i;
-            nbQueues = families[i].queueCount;
-            if (!(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
-                break;
+
+    {
+        VkApplicationInfo appInfo = { VK_STRUCTURE_TYPE_APPLICATION_INFO, nullptr, "vulkan-shader-profiler-runnner", 0,
+            "vulkan-shader-profiler-runner", 0, VK_MAKE_VERSION(1, 3, 0) };
+        VkInstanceCreateInfo info = {
+            VK_STRUCTURE_TYPE_INSTANCE_CREATE_INFO,
+            nullptr,
+            0,
+            &appInfo,
+            0,
+            nullptr,
+            0,
+            nullptr,
+        };
+
+        res = vkCreateInstance(&info, nullptr, &gInstance);
+    }
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create vulkan instance (result: %i)", res);
+        return -1;
+    }
+
+    {
+        uint32_t nbDevices;
+        res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, nullptr);
+        if (res != VK_SUCCESS) {
+            ERROR("Could not enumerate physical devices (result: %i)", res);
+            goto fail_instance;
+        }
+
+        std::vector<VkPhysicalDevice> physicalDevices(nbDevices);
+        res = vkEnumeratePhysicalDevices(gInstance, &nbDevices, physicalDevices.data());
+        if (res != VK_SUCCESS) {
+            ERROR("Could not enumerate physical devices (second call) (result: %i)", res);
+            goto fail_instance;
+        }
+        pDevice = physicalDevices.front();
+
+        vkGetPhysicalDeviceMemoryProperties(pDevice, &memProperties);
+        VkPhysicalDeviceVariablePointerFeaturesKHR variablePointerFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_VARIABLE_POINTERS_FEATURES_KHR, nullptr };
+        VkPhysicalDeviceShaderSubgroupExtendedTypesFeaturesKHR shaderSubgroupExtendedTypesFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_SUBGROUP_EXTENDED_TYPES_FEATURES_KHR,
+                  &variablePointerFeatures };
+        VkPhysicalDeviceShaderFloat16Int8FeaturesKHR float16Int8Features
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_FLOAT16_INT8_FEATURES_KHR,
+                  &shaderSubgroupExtendedTypesFeatures };
+        VkPhysicalDevice8BitStorageFeaturesKHR storage8bitFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_8BIT_STORAGE_FEATURES_KHR, &float16Int8Features };
+        VkPhysicalDevice16BitStorageFeaturesKHR storage16bitFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_16BIT_STORAGE_FEATURES_KHR, &storage8bitFeatures };
+        VkPhysicalDeviceZeroInitializeWorkgroupMemoryFeatures zeroInitializeWgMemFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_ZERO_INITIALIZE_WORKGROUP_MEMORY_FEATURES, &storage16bitFeatures };
+        VkPhysicalDeviceShaderAtomicInt64Features shaderAtomicInt64Features
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_ATOMIC_INT64_FEATURES, &zeroInitializeWgMemFeatures };
+        VkPhysicalDeviceShaderClockFeaturesKHR shaderClockFeatures
+            = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_SHADER_CLOCK_FEATURES_KHR, &shaderAtomicInt64Features };
+        void *pNext = &shaderAtomicInt64Features;
+        if (!gDisableCounters) {
+            pNext = &shaderClockFeatures;
+        }
+        VkPhysicalDeviceFeatures2 pDeviceFeatures = { VK_STRUCTURE_TYPE_PHYSICAL_DEVICE_FEATURES_2, pNext };
+        vkGetPhysicalDeviceFeatures2(pDevice, &pDeviceFeatures);
+        if (shaderAtomicInt64Features.shaderBufferInt64Atomics == 0) {
+            ERROR("shaderBufferInt64Atomics not supported");
+            goto fail_instance;
+        }
+        if (!gDisableCounters && (shaderClockFeatures.shaderSubgroupClock == 0)) {
+            ERROR("shaderClockFeatures.shaderSubgroupClock not supported");
+            goto fail_instance;
+        }
+
+        uint32_t nbFamilies;
+        vkGetPhysicalDeviceQueueFamilyProperties(pDevice, &nbFamilies, nullptr);
+
+        std::vector<VkQueueFamilyProperties> families(nbFamilies);
+        vkGetPhysicalDeviceQueueFamilyProperties(pDevice, &nbFamilies, families.data());
+
+        uint32_t nbQueues;
+        for (uint32_t i = 0; i < nbFamilies; i++) {
+            if (families[i].queueFlags & VK_QUEUE_COMPUTE_BIT) {
+                queueFamilyIndex = i;
+                nbQueues = families[i].queueCount;
+                if (!(families[i].queueFlags & VK_QUEUE_GRAPHICS_BIT)) {
+                    break;
+                }
             }
         }
+        if (queueFamilyIndex == UINT32_MAX) {
+            ERROR("Could not find a VK_QUEUE_COMPUTE_BIT queue");
+            goto fail_instance;
+        }
+
+        void *globalPriority = nullptr;
+
+        VkDeviceQueueGlobalPriorityCreateInfoKHR globalPriorityCreateInfo;
+        const uint32_t nb_priorities = 4;
+        VkQueueGlobalPriorityKHR priorities[nb_priorities]
+            = { VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR, VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR,
+                  VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR, VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR };
+        if (gPriority != UINT32_MAX) {
+            gPriority = std::min(gPriority, nb_priorities - 1);
+
+            globalPriorityCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR;
+            globalPriorityCreateInfo.pNext = nullptr;
+            globalPriorityCreateInfo.globalPriority = priorities[gPriority];
+            globalPriority = &globalPriorityCreateInfo;
+        }
+
+        std::vector<float> queuePriorities(nbQueues, 1.0f);
+        VkDeviceQueueCreateInfo queueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, globalPriority, 0,
+            queueFamilyIndex, nbQueues, queuePriorities.data() };
+
+        size_t pos = 0;
+        std::string extensionsStr = std::string(enabledExtensionNames);
+        if (!extensionsStr.empty() && extensionsStr[0] == '.') {
+            extensionsStr.erase(0, 1); // remove first '.'
+        }
+        std::vector<std::string> extensionsStrVector = split_string(extensionsStr, ".");
+        std::vector<const char *> extensions;
+        for (auto &ext : extensionsStrVector) {
+            if (!ext.empty()) {
+                extensions.push_back(ext.c_str());
+            }
+        }
+        if (!gDisableCounters) {
+            extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
+        }
+
+        const VkDeviceCreateInfo createInfo = {
+            VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
+            &pDeviceFeatures,
+            0,
+            1,
+            &queueCreateInfo,
+            0,
+            nullptr,
+            (uint32_t)extensions.size(),
+            extensions.data(),
+            nullptr,
+        };
+
+        res = vkCreateDevice(pDevice, &createInfo, nullptr, &device);
     }
-    CHECK(queueFamilyIndex != UINT32_MAX, "Could not find a VK_QUEUE_COMPUTE_BIT queue");
-
-    void *globalPriority = nullptr;
-
-    VkDeviceQueueGlobalPriorityCreateInfoKHR globalPriorityCreateInfo;
-    const uint32_t nb_priorities = 4;
-    VkQueueGlobalPriorityKHR priorities[nb_priorities] = { VK_QUEUE_GLOBAL_PRIORITY_LOW_KHR,
-        VK_QUEUE_GLOBAL_PRIORITY_MEDIUM_KHR, VK_QUEUE_GLOBAL_PRIORITY_HIGH_KHR, VK_QUEUE_GLOBAL_PRIORITY_REALTIME_KHR };
-    if (gPriority != UINT32_MAX) {
-        gPriority = std::min(gPriority, nb_priorities - 1);
-
-        globalPriorityCreateInfo.sType = VK_STRUCTURE_TYPE_DEVICE_QUEUE_GLOBAL_PRIORITY_CREATE_INFO_KHR;
-        globalPriorityCreateInfo.pNext = nullptr;
-        globalPriorityCreateInfo.globalPriority = priorities[gPriority];
-        globalPriority = &globalPriorityCreateInfo;
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create device (result: %i)", res);
+        goto fail_instance;
     }
-
-    std::vector<float> queuePriorities(nbQueues, 1.0f);
-    VkDeviceQueueCreateInfo queueCreateInfo = { VK_STRUCTURE_TYPE_DEVICE_QUEUE_CREATE_INFO, globalPriority, 0,
-        queueFamilyIndex, nbQueues, queuePriorities.data() };
-
-    size_t pos = 0;
-    std::string extensionsStr = std::string(enabledExtensionNames);
-    extensionsStr.erase(0, 1); // remove first '.'
-    std::vector<const char *> extensions = split_string(extensionsStr, ".");
-    if (!gDisableCounters) {
-        extensions.push_back(VK_KHR_SHADER_CLOCK_EXTENSION_NAME);
-    }
-
-    const VkDeviceCreateInfo createInfo = {
-        VK_STRUCTURE_TYPE_DEVICE_CREATE_INFO,
-        &pDeviceFeatures,
-        0,
-        1,
-        &queueCreateInfo,
-        0,
-        nullptr,
-        (uint32_t)extensions.size(),
-        extensions.data(),
-        nullptr,
-    };
-
-    res = vkCreateDevice(pDevice, &createInfo, nullptr, &device);
-    CHECK_VK(res, "Could not create device");
 
     vkGetDeviceQueue(device, queueFamilyIndex, 0, &queue);
 
-    const VkCommandPoolCreateInfo pCreateInfo
-        = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, 0, queueFamilyIndex };
-    res = vkCreateCommandPool(device, &pCreateInfo, nullptr, &gCmdPool);
-    CHECK_VK(res, "Could not create command pool");
+    {
+        const VkCommandPoolCreateInfo pCreateInfo
+            = { VK_STRUCTURE_TYPE_COMMAND_POOL_CREATE_INFO, nullptr, 0, queueFamilyIndex };
+        res = vkCreateCommandPool(device, &pCreateInfo, nullptr, &gCmdPool);
+    }
+    if (res != VK_SUCCESS) {
+        ERROR("Could not create command pool (result: %i)", res);
+        goto fail_device;
+    }
 
-    const VkCommandBufferAllocateInfo pAllocateInfo
-        = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, gCmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
-    res = vkAllocateCommandBuffers(device, &pAllocateInfo, &cmdBuffer);
-    CHECK_VK(res, "Could not allocate command buffer");
+    {
+        const VkCommandBufferAllocateInfo pAllocateInfo
+            = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_ALLOCATE_INFO, nullptr, gCmdPool, VK_COMMAND_BUFFER_LEVEL_PRIMARY, 1 };
+        res = vkAllocateCommandBuffers(device, &pAllocateInfo, &cmdBuffer);
+    }
+    if (res != VK_SUCCESS) {
+        ERROR("Could not allocate command buffer (result: %i)", res);
+        goto fail_cmd_pool;
+    }
 
-    const VkCommandBufferBeginInfo pBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
-        VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr };
-    res = vkBeginCommandBuffer(cmdBuffer, &pBeginInfo);
-    CHECK_VK(res, "Could not begin command buffer");
+    {
+        const VkCommandBufferBeginInfo pBeginInfo = { VK_STRUCTURE_TYPE_COMMAND_BUFFER_BEGIN_INFO, nullptr,
+            VK_COMMAND_BUFFER_USAGE_ONE_TIME_SUBMIT_BIT, nullptr };
+        res = vkBeginCommandBuffer(cmdBuffer, &pBeginInfo);
+    }
+    if (res != VK_SUCCESS) {
+        ERROR("Could not begin command buffer (result: %i)", res);
+        goto fail_cmd_pool; // destroying pool will free command buffer
+    }
 
     return 0;
+
+fail_cmd_pool:
+    vkDestroyCommandPool(device, gCmdPool, nullptr);
+    gCmdPool = VK_NULL_HANDLE;
+fail_device:
+    vkDestroyDevice(device, nullptr);
+    device = VK_NULL_HANDLE;
+fail_instance:
+    vkDestroyInstance(gInstance, nullptr);
+    gInstance = VK_NULL_HANDLE;
+    return -1;
 }
 
 static uint32_t allocate_buffer(VkDevice device, VkPhysicalDeviceMemoryProperties &memProperties,
@@ -1106,36 +1167,51 @@ static uint32_t print_results(VkPhysicalDevice pDevice, VkDevice device, vksp::v
 void clean_vk_objects(VkDevice device, VkCommandBuffer cmdBuffer, std::vector<VkDescriptorSet> &descSet,
     std::vector<VkDescriptorSetLayout> &descSetLayoutVector, VkPipelineLayout pipelineLayout, VkPipeline pipeline)
 {
-    vkDestroyShaderModule(device, gShaderModule, nullptr);
-    vkDestroyPipeline(device, pipeline, nullptr);
-    vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
-    for (auto sampler : gSamplers) {
-        vkDestroySampler(device, sampler, nullptr);
+    if (device != VK_NULL_HANDLE) {
+        if (gShaderModule != VK_NULL_HANDLE)
+            vkDestroyShaderModule(device, gShaderModule, nullptr);
+        if (pipeline != VK_NULL_HANDLE)
+            vkDestroyPipeline(device, pipeline, nullptr);
+        if (pipelineLayout != VK_NULL_HANDLE)
+            vkDestroyPipelineLayout(device, pipelineLayout, nullptr);
+        for (auto sampler : gSamplers) {
+            vkDestroySampler(device, sampler, nullptr);
+        }
+        for (auto imageView : gImageViews) {
+            vkDestroyImageView(device, imageView, nullptr);
+        }
+        for (auto image : gImages) {
+            vkDestroyImage(device, image, nullptr);
+        }
+        for (auto bufferView : gBufferViews) {
+            vkDestroyBufferView(device, bufferView, nullptr);
+        }
+        for (auto buffer : gBuffers) {
+            vkDestroyBuffer(device, buffer, nullptr);
+        }
+        for (auto memory : gMemories) {
+            vkFreeMemory(device, memory, nullptr);
+        }
+        if (gDescPool != VK_NULL_HANDLE && !descSet.empty()) {
+            vkFreeDescriptorSets(device, gDescPool, descSet.size(), descSet.data());
+        }
+        if (gDescPool != VK_NULL_HANDLE) {
+            vkDestroyDescriptorPool(device, gDescPool, nullptr);
+        }
+        for (auto descSetLayout : descSetLayoutVector) {
+            vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
+        }
+        if (gCmdPool != VK_NULL_HANDLE && cmdBuffer != VK_NULL_HANDLE) {
+            vkFreeCommandBuffers(device, gCmdPool, 1, &cmdBuffer);
+        }
+        if (gCmdPool != VK_NULL_HANDLE) {
+            vkDestroyCommandPool(device, gCmdPool, nullptr);
+        }
+        vkDestroyDevice(device, nullptr);
     }
-    for (auto imageView : gImageViews) {
-        vkDestroyImageView(device, imageView, nullptr);
+    if (gInstance != VK_NULL_HANDLE) {
+        vkDestroyInstance(gInstance, nullptr);
     }
-    for (auto image : gImages) {
-        vkDestroyImage(device, image, nullptr);
-    }
-    for (auto bufferView : gBufferViews) {
-        vkDestroyBufferView(device, bufferView, nullptr);
-    }
-    for (auto buffer : gBuffers) {
-        vkDestroyBuffer(device, buffer, nullptr);
-    }
-    for (auto memory : gMemories) {
-        vkFreeMemory(device, memory, nullptr);
-    }
-    vkFreeDescriptorSets(device, gDescPool, descSet.size(), descSet.data());
-    vkDestroyDescriptorPool(device, gDescPool, nullptr);
-    for (auto descSetLayout : descSetLayoutVector) {
-        vkDestroyDescriptorSetLayout(device, descSetLayout, nullptr);
-    }
-    vkFreeCommandBuffers(device, gCmdPool, 1, &cmdBuffer);
-    vkDestroyCommandPool(device, gCmdPool, nullptr);
-    vkDestroyDevice(device, nullptr);
-    vkDestroyInstance(gInstance, nullptr);
 }
 
 static void help()
@@ -1185,8 +1261,8 @@ static bool parse_args(int argc, char **argv)
             gOutputString = std::string(optarg);
             auto splits = split_string(gOutputString, ".");
             if (splits.size() == 2) {
-                gOutputDs = atoi(splits[0]);
-                gOutputBinding = atoi(splits[1]);
+                gOutputDs = atoi(splits[0].c_str());
+                gOutputBinding = atoi(splits[1].c_str());
             } else {
                 ERROR("'%s' does not match output (expected: 'ds.binding')", gOutputString.c_str());
                 bHelp = true;
@@ -1233,7 +1309,7 @@ int main(int argc, char **argv)
     std::vector<vksp::vksp_push_constant> pcVector;
     std::vector<vksp::vksp_specialization_map_entry> meVector;
     std::vector<vksp::vksp_counter> counters;
-    vksp::vksp_configuration config;
+    vksp::vksp_configuration config = {};
     CHECK(extract_from_input(gInput.c_str(), gSpvTargetEnv, gDisableCounters, gVerbose, shader, dsVector, pcVector,
               meVector, counters, config),
         "Could not extract data from input");
@@ -1244,20 +1320,31 @@ int main(int argc, char **argv)
     PRINT("Extensions: '%s'", config.enabledExtensionNames);
 
     VkPhysicalDevice pDevice;
-    VkDevice device;
+    VkDevice device = VK_NULL_HANDLE;
     VkQueue queue;
-    VkCommandBuffer cmdBuffer;
+    VkCommandBuffer cmdBuffer = VK_NULL_HANDLE;
     VkPhysicalDeviceMemoryProperties memProperties;
-    CHECK(
-        get_device_queue_and_cmd_buffer(pDevice, device, queue, cmdBuffer, memProperties, config.enabledExtensionNames)
-            == 0,
-        "Could not get Vulkan Queue");
+    if (get_device_queue_and_cmd_buffer(pDevice, device, queue, cmdBuffer, memProperties, config.enabledExtensionNames)
+        != 0) {
+        ERROR("Could not get Vulkan Queue");
+        return -1;
+    }
     PRINT("Device, queue and command buffer created");
 
     std::vector<VkDescriptorSet> descSet(count_descriptor_set(dsVector));
     std::vector<VkDescriptorSetLayout> descSetLayoutVector;
-    CHECK(allocate_descriptor_set(device, descSet, dsVector, descSetLayoutVector) == 0,
-        "Could not allocate descriptor set");
+    VkPipelineLayout pipelineLayout = VK_NULL_HANDLE;
+    VkPipeline pipeline = VK_NULL_HANDLE;
+    int ret = 0;
+
+    std::vector<VkPushConstantRange> pcRanges;
+    std::map<uint32_t, std::vector<vksp::vksp_push_constant>> pcMap;
+
+    if (allocate_descriptor_set(device, descSet, dsVector, descSetLayoutVector) != 0) {
+        ERROR("Could not allocate descriptor set");
+        ret = -1;
+        goto cleanup;
+    }
     PRINT("Descriptor set allocated");
 
     if (gBuffersInput != "") {
@@ -1280,8 +1367,11 @@ int main(int argc, char **argv)
                 ds.ds, ds.binding, ds.type, ds.buffer.size, ds.buffer.flags, ds.buffer.queueFamilyIndexCount,
                 ds.buffer.sharingMode, ds.buffer.usage, ds.buffer.range, ds.buffer.offset, ds.buffer.memorySize,
                 ds.buffer.memoryType, ds.buffer.bindOffset, ds.buffer.viewFlags, ds.buffer.viewFormat);
-            CHECK(handle_descriptor_set_buffer(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_buffer(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set buffer");
+                ret = -1;
+                goto cleanup;
+            }
             break;
         case VK_DESCRIPTOR_TYPE_SAMPLED_IMAGE:
         case VK_DESCRIPTOR_TYPE_STORAGE_IMAGE:
@@ -1297,8 +1387,11 @@ int main(int argc, char **argv)
                 ds.image.layerCount, ds.image.viewFlags, ds.image.viewType, ds.image.viewFormat, ds.image.component_a,
                 ds.image.component_b, ds.image.component_g, ds.image.component_r, ds.image.memoryType,
                 ds.image.memorySize, ds.image.bindOffset);
-            CHECK(handle_descriptor_set_image(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_image(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set image");
+                ret = -1;
+                goto cleanup;
+            }
             break;
         case VK_DESCRIPTOR_TYPE_SAMPLER:
             PRINT("descriptor_set: ds %u binding %u type %u SAMPLER flags %u magFilter %u minFilter %u mipmapMode %u "
@@ -1309,16 +1402,17 @@ int main(int argc, char **argv)
                 ds.sampler.fMipLodBias, ds.sampler.anisotropyEnable, ds.sampler.fMaxAnisotropy,
                 ds.sampler.compareEnable, ds.sampler.compareOp, ds.sampler.fMinLod, ds.sampler.fMaxLod,
                 ds.sampler.borderColor, ds.sampler.unnormalizedCoordinates);
-            CHECK(handle_descriptor_set_sampler(ds, device, cmdBuffer, memProperties, descSet) == 0,
-                "Could not handle descriptor set buffer");
+            if (handle_descriptor_set_sampler(ds, device, cmdBuffer, memProperties, descSet) != 0) {
+                ERROR("Could not handle descriptor set sampler");
+                ret = -1;
+                goto cleanup;
+            }
             break;
         default:
             PRINT("descriptor_set, ds %u binding %u type %u UNKNWON_TYPE", ds.ds, ds.binding, ds.type);
             break;
         }
     }
-    std::vector<VkPushConstantRange> pcRanges;
-    std::map<uint32_t, std::vector<vksp::vksp_push_constant>> pcMap;
     for (auto &pc : pcVector) {
         PRINT("push_constants: offset %u size %u stageFlags %u pValues %s", pc.offset, pc.size, pc.stageFlags,
             pc.pValues);
@@ -1335,14 +1429,19 @@ int main(int argc, char **argv)
         pcRanges.push_back({ it.first, min_offset, size });
     }
 
-    VkPipelineLayout pipelineLayout;
-    CHECK(allocate_pipeline_layout(device, pcVector, pcRanges, descSetLayoutVector, pipelineLayout) == 0,
-        "Could not allocate pipeline layout");
+    if (allocate_pipeline_layout(device, pcVector, pcRanges, descSetLayoutVector, pipelineLayout) != 0) {
+        ERROR("Could not allocate pipeline layout");
+        ret = -1;
+        goto cleanup;
+    }
     PRINT("Pipeline layout allocated");
 
     for (auto &range : pcRanges) {
-        CHECK(handle_push_constant(pcMap[(uint32_t)range.stageFlags], range, cmdBuffer, pipelineLayout) == 0,
-            "Could not handle push constant");
+        if (handle_push_constant(pcMap[(uint32_t)range.stageFlags], range, cmdBuffer, pipelineLayout) != 0) {
+            ERROR("Could not handle push constant");
+            ret = -1;
+            goto cleanup;
+        }
     }
 
     vkCmdBindDescriptorSets(
@@ -1352,27 +1451,51 @@ int main(int argc, char **argv)
         PRINT("map_entry: constantID %u offset %u size %u", me.constantID, me.offset, me.size);
     }
 
-    VkPipeline pipeline;
-    CHECK(allocate_pipeline(shader, pipelineLayout, device, cmdBuffer, meVector, config, pipeline) == 0,
-        "Could not allocate pipeline");
+    if (allocate_pipeline(shader, pipelineLayout, device, cmdBuffer, meVector, config, pipeline) != 0) {
+        ERROR("Could not allocate pipeline");
+        ret = -1;
+        goto cleanup;
+    }
     PRINT("Compute pipeline allocated");
 
     if (gHotRun) {
         uint64_t gpu_timestamps[gNbGpuTimestamps];
         std::chrono::steady_clock::time_point host_timestamps[3];
-        CHECK(execute(device, cmdBuffer, queue, config, counters, gpu_timestamps, host_timestamps, memProperties) == 0,
-            "Could not execute");
+        if (execute(device, cmdBuffer, queue, config, counters, gpu_timestamps, host_timestamps, memProperties) != 0) {
+            ERROR("Could not execute");
+            ret = -1;
+            goto cleanup;
+        }
         PRINT("Execution completed");
 
-        CHECK(print_results(pDevice, device, config, counters, gpu_timestamps, host_timestamps) == 0,
-            "Could not print all results");
+        if (print_results(pDevice, device, config, counters, gpu_timestamps, host_timestamps) != 0) {
+            ERROR("Could not print all results");
+            ret = -1;
+            goto cleanup;
+        }
 
         if (gOutputDsPtr != nullptr) {
-            CHECK(dump_output(device) == 0, "Could not dump output memory");
+            if (dump_output(device) != 0) {
+                ERROR("Could not dump output memory");
+                ret = -1;
+                goto cleanup;
+            }
         }
     }
 
+cleanup:
     clean_vk_objects(device, cmdBuffer, descSet, descSetLayoutVector, pipelineLayout, pipeline);
 
-    return 0;
+    free((void *)config.enabledExtensionNames);
+    free((void *)config.specializationInfoData);
+    free((void *)config.shaderName);
+    free((void *)config.entryPoint);
+    for (auto &pc : pcVector) {
+        free((void *)pc.pValues);
+    }
+    for (auto &c : counters) {
+        free((void *)c.name);
+    }
+
+    return ret;
 }

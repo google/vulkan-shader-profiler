@@ -185,7 +185,7 @@ bool get_shader_and_device_from_config(TraceProcessor *tp, std::string &shader, 
     GET_INT_VALUE(tp, shader_device_arg_set_id, "debug.device", device);
 
     if (gShaderFile != "") {
-        if (read_shader_buffer(&gShaderFile, &shader_buffer)) {
+        if (read_shader_buffer(gShaderFile.c_str(), &shader_buffer)) {
             return true;
         } else {
             ERROR("'%s' does not exist, get shader code from perfetto file", gShaderFile.c_str());
@@ -255,6 +255,8 @@ bool get_push_constants(TraceProcessor *tp, uint64_t commandBuffer, uint64_t max
         }
         if (pcToRegister) {
             push_constants_vector.push_back(pc);
+        } else {
+            free((void *)pc.pValues);
         }
     }
 
@@ -680,7 +682,7 @@ int main(int argc, char **argv)
     CHECK(tp != nullptr, "Initialization failed");
     PRINT("%s read with success", gInput.c_str());
 
-    vksp::vksp_configuration config;
+    vksp::vksp_configuration config = {};
     uint64_t dispatch, commandBuffer;
     CHECK(get_dispatch_and_commandBuffer_from_dispatchId(tp.get(), gDispatchId, dispatch, commandBuffer, config),
         "Could not get dispatch, compute and commandBuffer from dispatchId");
@@ -776,13 +778,21 @@ int main(int argc, char **argv)
     }
 
     if (gShaderFile == "") {
-        CHECK(store_shader_in_output(&shader, &push_constants_vector, &descriptor_sets_vector, &map_entry_vector,
+        CHECK(store_shader_in_output(shader.c_str(), &push_constants_vector, &descriptor_sets_vector, &map_entry_vector,
                   &config, gOutput.c_str(), gBinary),
             "Could not store shader in output file");
     } else {
         CHECK(store_shader_buffer_in_output(&shader_buffer, &push_constants_vector, &descriptor_sets_vector,
                   &map_entry_vector, &config, gOutput.c_str(), gBinary),
             "Could not store shader buffer in output file");
+    }
+
+    free((void *)config.enabledExtensionNames);
+    free((void *)config.specializationInfoData);
+    free((void *)config.shaderName);
+    free((void *)config.entryPoint);
+    for (auto &pc : push_constants_vector) {
+        free((void *)pc.pValues);
     }
 
     return 0;

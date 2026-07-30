@@ -15,6 +15,7 @@
 #pragma once
 
 #include <map>
+#include <set>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -39,20 +40,32 @@ public:
         , m_oneFile(oneFile)
     {
     }
+    ~BuffersFile()
+    {
+        for (void *ptr : m_owned_pointers) {
+            free(ptr);
+        }
+    }
 
     bool ReadFromFile(const char *filename)
     {
         FILE *fd = fopen(filename, "r");
+        if (fd == nullptr) {
+            return false;
+        }
         uint32_t file_header[3];
         if (fread(file_header, sizeof(file_header), 1, fd) != 1) {
+            fclose(fd);
             return false;
         }
         if (file_header[0] != m_magic || file_header[1] != m_version || file_header[2] != m_dispatchId) {
+            fclose(fd);
             return false;
         }
         while (true) {
             uint32_t buffer_header[3];
             if (fread(buffer_header, sizeof(buffer_header), 1, fd) != 1) {
+                fclose(fd);
                 return false;
             }
             if (buffer_header[0] == UINT32_MAX || buffer_header[1] == UINT32_MAX || buffer_header[2] == UINT32_MAX) {
@@ -63,12 +76,20 @@ public:
             uint32_t size = buffer_header[2];
             void *data = malloc(size);
             if (data == nullptr) {
+                fclose(fd);
                 return false;
             }
             size_t byte_read = 0;
             while (byte_read != size) {
-                byte_read += fread(&(((char *)data)[byte_read]), sizeof(char), size - byte_read, fd);
+                size_t read = fread(&(((char *)data)[byte_read]), sizeof(char), size - byte_read, fd);
+                if (read == 0) {
+                    free(data);
+                    fclose(fd);
+                    return false;
+                }
+                byte_read += read;
             }
+            m_owned_pointers.insert(data);
             buffer_map_val val = std::make_pair(size, data);
             m_buffers[key] = val;
         }
@@ -95,7 +116,12 @@ private:
 
             uint32_t byte_written = 0;
             while (byte_written != size) {
-                byte_written += fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                size_t written = fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                if (written == 0) {
+                    fclose(fd);
+                    return false;
+                }
+                byte_written += written;
             }
 
             fclose(fd);
@@ -110,12 +136,15 @@ private:
             return false;
         }
         if (fwrite(&m_magic, sizeof(m_magic), 1, fd) != 1) {
+            fclose(fd);
             return false;
         }
         if (fwrite(&m_version, sizeof(m_version), 1, fd) != 1) {
+            fclose(fd);
             return false;
         }
         if (fwrite(&m_dispatchId, sizeof(m_dispatchId), 1, fd) != 1) {
+            fclose(fd);
             return false;
         }
         for (auto &buffer : m_buffers) {
@@ -124,21 +153,30 @@ private:
             uint32_t size = buffer.second.first;
             void *data = buffer.second.second;
             if (fwrite(&set, sizeof(set), 1, fd) != 1) {
+                fclose(fd);
                 return false;
             }
             if (fwrite(&binding, sizeof(binding), 1, fd) != 1) {
+                fclose(fd);
                 return false;
             }
             if (fwrite(&size, sizeof(size), 1, fd) != 1) {
+                fclose(fd);
                 return false;
             }
             uint32_t byte_written = 0;
             while (byte_written != size) {
-                byte_written += fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                size_t written = fwrite(&(((char *)data)[byte_written]), sizeof(char), size - byte_written, fd);
+                if (written == 0) {
+                    fclose(fd);
+                    return false;
+                }
+                byte_written += written;
             }
         }
         uint32_t eof[3] = { UINT32_MAX, UINT32_MAX, UINT32_MAX };
         if (fwrite(eof, sizeof(eof), 1, fd) != 1) {
+            fclose(fd);
             return false;
         }
         fclose(fd);
@@ -171,5 +209,6 @@ private:
     const uint32_t m_dispatchId;
     buffers_map m_buffers;
     bool m_oneFile;
+    std::set<void *> m_owned_pointers;
 };
 }

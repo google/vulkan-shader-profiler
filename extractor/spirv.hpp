@@ -18,11 +18,11 @@
 #include <string>
 #include <vector>
 
-extern "C" bool store_shader_in_output(std::string *shader, std::vector<vksp::vksp_push_constant> *pc,
+extern "C" bool store_shader_in_output(const char *shader, std::vector<vksp::vksp_push_constant> *pc,
     std::vector<vksp::vksp_descriptor_set> *ds, std::vector<vksp::vksp_specialization_map_entry> *me,
     vksp::vksp_configuration *config, const char *output_filename, bool binary_output);
 extern "C" bool store_shader_buffer_in_output(std::vector<char> *shader_buffer,
     std::vector<vksp::vksp_push_constant> *pc, std::vector<vksp::vksp_descriptor_set> *ds,
     std::vector<vksp::vksp_specialization_map_entry> *me, vksp::vksp_configuration *config, const char *output_filename,
     bool binary_output);
-extern "C" bool read_shader_buffer(std::string *gShaderFile, std::vector<char> *shader_buffer);
+extern "C" bool read_shader_buffer(const char *gShaderFile, std::vector<char> *shader_buffer);
