@@ -76,6 +76,8 @@ For Android, only the **Layer** and the **Runner** are supported for device exec
 
 ## Running an Application with Vulkan Shader Profiler
 
+### On Linux
+
 To run an application with the profiler layer enabled, ensure the following:
 
 1.  The `Vulkan-Loader` can find the manifest in `manifest/vulkan-shader-profiler.json`. Set this using:
