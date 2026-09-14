@@ -42,6 +42,9 @@ static bool gVerbose = true;
 #include <queue>
 #include <set>
 #include <thread>
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
 
 /*****************************************************************************/
 /* PERFETTO GLOBAL VARIABLES *************************************************/
@@ -79,11 +82,20 @@ static std::unique_ptr<perfetto::TracingSession> gTracingSession;
 #define DISPATCH_TABLE_ELEMENT(func) PFN_vk##func func;
 
 #undef PRINT_IMPL
+#ifdef __ANDROID__
+#define PRINT_IMPL(file, message, ...)                                                                                 \
+    do {                                                                                                               \
+        __android_log_print(ANDROID_LOG_ERROR, "VKSP", "[VKSP] %s: " message "\n", __func__, ##__VA_ARGS__);           \
+        fprintf(file, "[VKSP] %s: " message "\n", __func__, ##__VA_ARGS__);                                            \
+        TRACE_EVENT_INSTANT(VKSP_PERFETTO_CATEGORY, "PRINT", "message", perfetto::DynamicString(message));             \
+    } while (0)
+#else
 #define PRINT_IMPL(file, message, ...)                                                                                 \
     do {                                                                                                               \
         fprintf(file, "[VKSP] %s: " message "\n", __func__, ##__VA_ARGS__);                                            \
         TRACE_EVENT_INSTANT(VKSP_PERFETTO_CATEGORY, "PRINT", "message", perfetto::DynamicString(message));             \
     } while (0)
+#endif
 
 /*****************************************************************************/
 /* GLOBAL VARIABLES & TYPES **************************************************/
