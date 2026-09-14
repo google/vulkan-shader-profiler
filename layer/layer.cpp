@@ -836,8 +836,51 @@ VkResult VKAPI_CALL vksp_QueueSubmit(VkQueue queue, uint32_t submitCount, const 
     std::lock_guard<std::mutex> lock(glock);
     TRACE_EVENT(VKSP_PERFETTO_CATEGORY, "vkQueueSubmit", "queue", (void *)queue, "submitCount", submitCount);
 
-    if (DeviceNotToTrace.count(QueueToDevice[queue])) {
-        return gDeviceDispatch[QueueToDevice[queue]].QueueSubmit(queue, submitCount, pSubmits, fence);
+    VkDevice dev = QueueToDevice[queue];
+    if (dev == VK_NULL_HANDLE || gDeviceDispatch.count(dev) == 0) {
+        for (unsigned eachSubmit = 0; eachSubmit < submitCount; eachSubmit++) {
+            for (unsigned eachCmd = 0; eachCmd < pSubmits[eachSubmit].commandBufferCount; eachCmd++) {
+                auto cmd = pSubmits[eachSubmit].pCommandBuffers[eachCmd];
+                if (CmdBufferToDevice.count(cmd) && CmdBufferToDevice[cmd] != VK_NULL_HANDLE) {
+                    dev = CmdBufferToDevice[cmd];
+                    QueueToDevice[queue] = dev;
+                    break;
+                }
+            }
+            if (dev != VK_NULL_HANDLE)
+                break;
+        }
+    }
+    if (dev == VK_NULL_HANDLE && !gDeviceDispatch.empty()) {
+        dev = (VkDevice)gDeviceDispatch.begin()->first;
+        QueueToDevice[queue] = dev;
+    }
+
+    if (dev == VK_NULL_HANDLE || gDeviceDispatch[dev].QueueSubmit == nullptr) {
+        PRINT("VKSP: Cannot find device or QueueSubmit for queue %p", (void *)queue);
+        return VK_ERROR_INITIALIZATION_FAILED;
+    }
+
+    if (DeviceNotToTrace.count(dev)) {
+        return gDeviceDispatch[dev].QueueSubmit(queue, submitCount, pSubmits, fence);
+    }
+
+    bool has_dispatches = false;
+    for (unsigned eachSubmit = 0; eachSubmit < submitCount; eachSubmit++) {
+        auto &submit = pSubmits[eachSubmit];
+        for (unsigned eachCmdBuffer = 0; eachCmdBuffer < submit.commandBufferCount; eachCmdBuffer++) {
+            auto &cmd_buffer = submit.pCommandBuffers[eachCmdBuffer];
+            if (!CmdBufferToThreadDispatch[cmd_buffer].empty()) {
+                has_dispatches = true;
+                break;
+            }
+        }
+        if (has_dispatches)
+            break;
+    }
+
+    if (!has_dispatches) {
+        return gDeviceDispatch[dev].QueueSubmit(queue, submitCount, pSubmits, fence);
     }
 
     auto info = QueueToThreadInfo[queue];
@@ -848,9 +891,9 @@ VkResult VKAPI_CALL vksp_QueueSubmit(VkQueue queue, uint32_t submitCount, const 
     }
 
     VkSubmitInfo mSubmits[submitCount];
-    std::vector<std::vector<VkSemaphore>> semaphores { submitCount };
-    std::vector<std::vector<uint64_t>> signalValues { submitCount };
-    std::vector<VkTimelineSemaphoreSubmitInfo> timelineInfos { submitCount };
+    std::vector<std::vector<VkSemaphore>> semaphores(submitCount);
+    std::vector<std::vector<uint64_t>> signalValues(submitCount);
+    std::vector<VkTimelineSemaphoreSubmitInfo> timelineInfos(submitCount);
     for (unsigned eachSubmit = 0; eachSubmit < submitCount; eachSubmit++) {
         auto &submit = pSubmits[eachSubmit];
         mSubmits[eachSubmit] = submit;
@@ -877,20 +920,21 @@ VkResult VKAPI_CALL vksp_QueueSubmit(VkQueue queue, uint32_t submitCount, const 
             next->signalSemaphoreValueCount = signalValues[eachSubmit].size();
             next->pSignalSemaphoreValues = signalValues[eachSubmit].data();
         } else {
-            VkTimelineSemaphoreSubmitInfo timelineInfo;
-            timelineInfo.sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
-            timelineInfo.pNext = mSubmits[eachSubmit].pNext;
-            timelineInfo.waitSemaphoreValueCount = 0;
-            timelineInfo.pWaitSemaphoreValues = nullptr;
-            timelineInfo.signalSemaphoreValueCount = 1;
-            timelineInfo.pSignalSemaphoreValues = &job->timeline_id;
+            signalValues[eachSubmit].resize(submit.signalSemaphoreCount, 0);
+            signalValues[eachSubmit].push_back(job->timeline_id);
 
-            timelineInfos.push_back(timelineInfo);
-            mSubmits[eachSubmit].pNext = &timelineInfos.back();
+            timelineInfos[eachSubmit].sType = VK_STRUCTURE_TYPE_TIMELINE_SEMAPHORE_SUBMIT_INFO;
+            timelineInfos[eachSubmit].pNext = mSubmits[eachSubmit].pNext;
+            timelineInfos[eachSubmit].waitSemaphoreValueCount = 0;
+            timelineInfos[eachSubmit].pWaitSemaphoreValues = nullptr;
+            timelineInfos[eachSubmit].signalSemaphoreValueCount = signalValues[eachSubmit].size();
+            timelineInfos[eachSubmit].pSignalSemaphoreValues = signalValues[eachSubmit].data();
+
+            mSubmits[eachSubmit].pNext = &timelineInfos[eachSubmit];
         }
     }
 
-    VkResult result = gDeviceDispatch[QueueToDevice[queue]].QueueSubmit(queue, submitCount, mSubmits, fence);
+    VkResult result = gDeviceDispatch[dev].QueueSubmit(queue, submitCount, mSubmits, fence);
 
     for (unsigned eachSubmit = 0; eachSubmit < submitCount; eachSubmit++) {
         auto &submit = pSubmits[eachSubmit];
