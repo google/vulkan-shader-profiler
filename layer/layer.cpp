@@ -832,7 +832,25 @@ void VKAPI_CALL vksp_GetDeviceQueue(VkDevice device, uint32_t queueFamilyIndex, 
 
     gDeviceDispatch[device].GetDeviceQueue(device, queueFamilyIndex, queueIndex, pQueue);
 
-    if (QueueToThreadInfo.count(*pQueue))
+    if (pQueue == nullptr || *pQueue == VK_NULL_HANDLE || QueueToThreadInfo.count(*pQueue))
+        return;
+
+    QueueToDevice[*pQueue] = device;
+    if (DeviceNotToTrace.count(device) == 0) {
+        auto info = new ThreadInfo(device, *pQueue);
+        QueueToThreadInfo[*pQueue] = info;
+        QueueThreadPool[device].emplace_back(std::make_pair(*pQueue, [info] { QueueThreadFct(info); }));
+    }
+}
+
+void VKAPI_CALL vksp_GetDeviceQueue2(VkDevice device, const VkDeviceQueueInfo2 *pQueueInfo, VkQueue *pQueue)
+{
+    std::lock_guard<std::mutex> lock(glock);
+    TRACE_EVENT(VKSP_PERFETTO_CATEGORY, "vkGetDeviceQueue2", "device", (void *)device);
+
+    gDeviceDispatch[device].GetDeviceQueue2(device, pQueueInfo, pQueue);
+
+    if (pQueue == nullptr || *pQueue == VK_NULL_HANDLE || QueueToThreadInfo.count(*pQueue))
         return;
 
     QueueToDevice[*pQueue] = device;
