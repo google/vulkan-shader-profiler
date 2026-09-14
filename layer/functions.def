@@ -21,6 +21,7 @@ FUNC_DEV(GetDeviceProcAddr)
 
 // Functions to intercept for the profiler to work
 FUNC_DEV(GetDeviceQueue)
+FUNC_DEV(GetDeviceQueue2)
 FUNC_DEV(AllocateCommandBuffers)
 FUNC_DEV(FreeCommandBuffers)
 FUNC_DEV(BeginCommandBuffer)
